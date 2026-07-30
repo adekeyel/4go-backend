@@ -1,0 +1,835 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Auth models (replace Supabase's internal auth.users + session handling) ---
+
+model User {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email             String?   @unique
+  phone             String?   @unique
+  password_hash     String
+  email_verified_at DateTime? @db.Timestamptz(6)
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  profile          Profiles?
+  refresh_sessions RefreshSession[]
+
+  @@map("users")
+}
+
+// One row per logged-in device/browser. The refresh JWT only embeds this
+// row's id (sid) + user id; revoking = deleting/marking the row, so logout
+// and "log out of all devices" both just touch this table.
+model RefreshSession {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_agent String?
+  ip         String?
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  expires_at DateTime  @db.Timestamptz(6)
+  revoked_at DateTime? @db.Timestamptz(6)
+
+  @@index([user_id])
+  @@map("refresh_sessions")
+}
+
+
+enum AdminRole {
+  super_admin
+  moderator
+  support
+  employee
+}
+
+model AdBanners {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  advertiser_id String? @db.Uuid
+  image_url String
+  target_url String
+  placements String[] @default([])
+  budget Decimal @default(0) @db.Decimal(14,2)
+  status String @default("active")
+  impressions Int @default(0)
+  clicks Int @default(0)
+  created_by String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  position String @default("middle")
+  @@index([status])
+
+  @@map("ad_banners")
+}
+
+model AdminAuditLogs {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actor_id String? @db.Uuid
+  actor_name String?
+  action String
+  target_id String? @db.Uuid
+  target_label String?
+  details Json @default("{}")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([action])
+  @@index([created_at])
+
+  @@map("admin_audit_logs")
+}
+
+model Advertisers {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name String
+  contact_email String?
+  contact_phone String?
+  notes String?
+  created_by String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("advertisers")
+}
+
+model AppSettings {
+  key String @id
+  value Json @default("{}")
+  label String?
+  category String @default("general")
+  updated_by String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("app_settings")
+}
+
+model BroadcastDeliveries {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  channel String
+  title String?
+  body String?
+  sent_by String? @db.Uuid
+  target_count Int @default(0)
+  success_count Int @default(0)
+  failure_count Int @default(0)
+  error_sample String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([created_at])
+
+  @@map("broadcast_deliveries")
+}
+
+model CallLogs {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id String @db.Uuid
+  caller_id String @db.Uuid
+  callee_id String @db.Uuid
+  call_type String
+  status String
+  duration_seconds Int @default(0)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([callee_id, status])
+  @@index([room_id, created_at])
+
+  @@map("call_logs")
+}
+
+model CoinPurchases {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  amount Int
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  payment_ref String? @unique
+
+  @@map("coin_purchases")
+}
+
+model ContestParticipants {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contest_id String @db.Uuid
+  user_id String @db.Uuid
+  rewarded Boolean @default(false)
+  rewarded_at DateTime? @db.Timestamptz(6)
+  joined_at DateTime @default(now()) @db.Timestamptz(6)
+  minutes_at_join Int @default(0)
+  @@unique([contest_id, user_id])
+  @@index([contest_id])
+
+  @@map("contest_participants")
+}
+
+model Contests {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title String
+  description String?
+  reward_amount Int @default(1000)
+  status String @default("draft")
+  starts_at DateTime? @db.Timestamptz(6)
+  ends_at DateTime? @db.Timestamptz(6)
+  max_winners Int? @default(10)
+  created_by String @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  criteria String @default("online_minutes")
+  criteria_label String?
+
+  @@map("contests")
+}
+
+model DailyClaims {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  claimed_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("daily_claims")
+}
+
+model DeviceContacts {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id String @db.Uuid
+  phone_hash String
+  contact_name String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([owner_id, phone_hash])
+  @@index([phone_hash])
+  @@index([owner_id])
+
+  @@map("device_contacts")
+}
+
+model EmailSendLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  message_id String?
+  template_name String
+  recipient_email String
+  status String
+  error_message String?
+  metadata Json?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([created_at])
+  @@index([message_id])
+  @@index([recipient_email])
+
+  @@map("email_send_log")
+}
+
+model EmailSendState {
+  id Int @id @default(1)
+  retry_after_until DateTime? @db.Timestamptz(6)
+  batch_size Int @default(10)
+  send_delay_ms Int @default(200)
+  auth_email_ttl_minutes Int @default(15)
+  transactional_email_ttl_minutes Int @default(60)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("email_send_state")
+}
+
+model EmailUnsubscribeTokens {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  token String @unique
+  email String @unique
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  used_at DateTime? @db.Timestamptz(6)
+  @@index([token])
+
+  @@map("email_unsubscribe_tokens")
+}
+
+model EmployeeActivityLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employee_id String @db.Uuid
+  action String
+  detail String?
+  meta Json @default("{}")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([created_at])
+  @@index([employee_id, created_at])
+
+  @@map("employee_activity_log")
+}
+
+model EmployeeNotifications {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  employee_id String @db.Uuid
+  invited_user_id String? @db.Uuid
+  title String
+  body String
+  read_at DateTime? @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([employee_id, created_at])
+  @@index([invited_user_id, created_at])
+
+  @@map("employee_notifications")
+}
+
+model Friends {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requester_id String @db.Uuid
+  addressee_id String @db.Uuid
+  status String @default("pending")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([requester_id, addressee_id])
+  @@index([addressee_id, status])
+  @@index([requester_id, status])
+
+  @@map("friends")
+}
+
+model GiftTransactions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sender_id String @db.Uuid
+  receiver_id String @db.Uuid
+  treasure_id String @db.Uuid
+  room_id String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  message_id String? @db.Uuid
+
+  @@map("gift_transactions")
+}
+
+model GlobalNotifications {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title String
+  message String
+  priority String @default("normal")
+  sent_by String @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([created_at])
+
+  @@map("global_notifications")
+}
+
+model Mentions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  mentioner_id String @db.Uuid
+  mentioned_user_id String @db.Uuid
+  source_type String
+  source_id String @db.Uuid
+  context_id String? @db.Uuid
+  preview String?
+  read_at DateTime? @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([mentioned_user_id, created_at])
+  @@index([source_type, source_id])
+
+  @@map("mentions")
+}
+
+model MessageReactions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  message_id String @db.Uuid
+  user_id String @db.Uuid
+  emoji String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([message_id, user_id, emoji])
+  @@index([message_id])
+
+  @@map("message_reactions")
+}
+
+model MessageViews {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  message_id String @db.Uuid
+  viewed_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([user_id, message_id])
+  @@index([message_id])
+
+  @@map("message_views")
+}
+
+model Messages {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id String @db.Uuid
+  sender_id String @db.Uuid
+  type String @default("text")
+  content String?
+  media_url String?
+  duration Int?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  edited_at DateTime? @db.Timestamptz(6)
+  reply_to String? @db.Uuid
+  @@index([room_id, created_at])
+  @@index([sender_id])
+
+  @@map("messages")
+}
+
+model ModerationReports {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reporter_id String @db.Uuid
+  target_user_id String? @db.Uuid
+  target_room_id String? @db.Uuid
+  target_message_id String? @db.Uuid
+  reason String
+  details String?
+  status String @default("pending")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([reporter_id])
+  @@index([target_message_id])
+  @@index([target_room_id])
+  @@index([target_user_id])
+
+  @@map("moderation_reports")
+}
+
+model MutedMembers {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id String @db.Uuid
+  user_id String @db.Uuid
+  muted_by String @db.Uuid
+  muted_at DateTime @default(now()) @db.Timestamptz(6)
+  muted_until DateTime? @db.Timestamptz(6)
+  reason String?
+  @@unique([room_id, user_id])
+
+  @@map("muted_members")
+}
+
+model NotificationReads {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  notification_id String @db.Uuid
+  user_id String @db.Uuid
+  read_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([notification_id, user_id])
+  @@index([user_id, notification_id])
+
+  @@map("notification_reads")
+}
+
+model PageFollowers {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  page_id String @db.Uuid
+  user_id String @db.Uuid
+  followed_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([page_id, user_id])
+  @@index([page_id])
+  @@index([user_id])
+
+  @@map("page_followers")
+}
+
+model PagePostUniqueViews {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  post_id String @db.Uuid
+  viewer_id String @db.Uuid
+  viewed_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([post_id, viewer_id])
+  @@index([post_id])
+
+  @@map("page_post_unique_views")
+}
+
+model PagePosts {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  page_id String @db.Uuid
+  author_id String @db.Uuid
+  content String?
+  media_url String?
+  media_type String @default("text")
+  views_count Int @default(0)
+  likes_count Int @default(0)
+  comments_count Int @default(0)
+  saves_count Int @default(0)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([created_at])
+  @@index([page_id])
+
+  @@map("page_posts")
+}
+
+model Pages {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id String @db.Uuid
+  name String
+  about String?
+  category String?
+  profile_image String?
+  cover_image String?
+  followers_count Int @default(0)
+  is_monetized Boolean @default(false)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([owner_id])
+
+  @@map("pages")
+}
+
+model PinnedMessages {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id String @db.Uuid
+  message_id String @db.Uuid
+  pinned_by String @db.Uuid
+  pinned_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([room_id, message_id])
+
+  @@map("pinned_messages")
+}
+
+model PostBoosts {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  post_id String @db.Uuid
+  owner_id String @db.Uuid
+  plan String
+  coins_spent Int
+  reach_target Int
+  reach_count Int @default(0)
+  duration_hours Int
+  started_at DateTime @default(now()) @db.Timestamptz(6)
+  ends_at DateTime @db.Timestamptz(6)
+  status String @default("active")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([post_id])
+  @@index([status, ends_at])
+
+  @@map("post_boosts")
+}
+
+model PostComments {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  post_id String @db.Uuid
+  content String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  parent_id String? @db.Uuid
+  edited_at DateTime? @db.Timestamptz(6)
+  @@index([parent_id])
+  @@index([post_id])
+
+  @@map("post_comments")
+}
+
+model PostLikes {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  post_id String @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([user_id, post_id])
+  @@index([post_id])
+  @@index([user_id])
+
+  @@map("post_likes")
+}
+
+model PostSaves {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  post_id String @db.Uuid
+  saved_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([user_id, post_id])
+  @@index([user_id])
+
+  @@map("post_saves")
+}
+
+model Posts {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  content String
+  image_url String?
+  likes_count Int @default(0)
+  comments_count Int @default(0)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([created_at])
+  @@index([user_id])
+
+  @@map("posts")
+}
+
+model Profiles {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid @unique
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  username String? @unique
+  display_name String?
+  avatar_url String?
+  bio String?
+  interests String[]
+  is_online Boolean? @default(false)
+  last_seen DateTime? @default(now()) @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  phone_number String?
+  total_online_minutes Int @default(0)
+  rank String @default("Amateur")
+  is_monetized Boolean @default(false)
+  coins Int @default(0)
+  referral_code String? @unique
+  purchased_coins Int @default(0)
+  earned_coins Int @default(0)
+  is_suspended Boolean @default(false)
+  suspended_at DateTime? @db.Timestamptz(6)
+  suspended_reason String?
+  reward_coins Int @default(0)
+  is_premium Boolean @default(false)
+  is_verified Boolean @default(false)
+  @@index([user_id])
+  @@index([username])
+
+  @@map("profiles")
+}
+
+model PushSubscriptions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  endpoint String @unique
+  p256dh String
+  auth String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([user_id, endpoint])
+
+  @@map("push_subscriptions")
+}
+
+model Referrals {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  referrer_id String @db.Uuid
+  referred_id String @db.Uuid @unique
+  coins_rewarded Int @default(500)
+  status String @default("completed")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("referrals")
+}
+
+model RoomJoinRequests {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id String @db.Uuid
+  user_id String @db.Uuid
+  status String @default("pending")
+  fee_paid Int @default(0)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  answers String[]
+  @@unique([room_id, user_id])
+
+  @@map("room_join_requests")
+}
+
+model RoomMembers {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id String @db.Uuid
+  user_id String @db.Uuid
+  role String @default("member")
+  joined_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([room_id, user_id])
+  @@index([room_id, user_id])
+  @@index([user_id])
+
+  @@map("room_members")
+}
+
+model RoomReads {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room_id String @db.Uuid
+  user_id String @db.Uuid
+  last_read_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([room_id, user_id])
+  @@index([user_id, room_id])
+
+  @@map("room_reads")
+}
+
+model Rooms {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name String
+  description String?
+  type String @default("public")
+  avatar_url String?
+  created_by String? @db.Uuid
+  max_members Int? @default(100)
+  is_active Boolean? @default(true)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  rules String?
+  join_fee Int @default(0)
+  join_questions String[]
+
+  @@map("rooms")
+}
+
+model StatusReactions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status_id String @db.Uuid
+  user_id String @db.Uuid
+  emoji String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([status_id, user_id])
+  @@index([status_id])
+
+  @@map("status_reactions")
+}
+
+model StatusViews {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status_id String @db.Uuid
+  viewer_id String @db.Uuid
+  viewed_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([status_id, viewer_id])
+  @@index([status_id])
+
+  @@map("status_views")
+}
+
+model Statuses {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  type String
+  media_url String?
+  caption String?
+  bg_color String?
+  text_content String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  expires_at DateTime @default(dbgenerated("(now() + '24:00:00'::interval)")) @db.Timestamptz(6)
+  @@index([expires_at])
+  @@index([user_id, created_at])
+
+  @@map("statuses")
+}
+
+model Subscriptions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  plan String
+  status String @default("active")
+  amount_ngn Decimal @db.Decimal(12,2)
+  payment_ref String?
+  current_period_start DateTime @default(now()) @db.Timestamptz(6)
+  current_period_end DateTime @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([user_id, status, current_period_end])
+
+  @@map("subscriptions")
+}
+
+model SuperAdmins {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid @unique
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  role AdminRole @default(super_admin)
+
+  @@map("super_admins")
+}
+
+model SupportConversations {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  subject String?
+  status String @default("open")
+  assigned_agent_id String? @db.Uuid
+  last_message String?
+  last_message_at DateTime @default(now()) @db.Timestamptz(6)
+  unread_for_agent Int @default(0)
+  unread_for_user Int @default(0)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([status, last_message_at])
+  @@index([user_id])
+
+  @@map("support_conversations")
+}
+
+model SupportMessages {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversation_id String @db.Uuid
+  sender_id String @db.Uuid
+  is_agent Boolean @default(false)
+  content String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([conversation_id, created_at])
+
+  @@map("support_messages")
+}
+
+model SuppressedEmails {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email String @unique
+  reason String
+  metadata Json?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([email])
+
+  @@map("suppressed_emails")
+}
+
+model Transactions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  amount Int
+  source String @default("purchase")
+  description String?
+  reference_id String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([user_id, source])
+  @@index([user_id, created_at])
+
+  @@map("transactions")
+}
+
+model Treasures {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name String
+  price Int
+  icon String
+  description String?
+  sort_order Int @default(0)
+
+  @@map("treasures")
+}
+
+model UserBlocks {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  blocker_id String @db.Uuid
+  blocked_id String @db.Uuid
+  reason String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([blocker_id, blocked_id])
+  @@index([blocked_id])
+  @@index([blocker_id])
+
+  @@map("user_blocks")
+}
+
+model VerificationApplications {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  status String @default("pending")
+  amount_ngn Decimal @default(10000) @db.Decimal(12,2)
+  payment_ref String?
+  applied_at DateTime @default(now()) @db.Timestamptz(6)
+  reviewed_at DateTime? @db.Timestamptz(6)
+  reviewed_by String? @db.Uuid
+  review_notes String?
+  is_verified Boolean @default(false)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([status])
+  @@index([user_id])
+
+  @@map("verification_applications")
+}
+
+model Withdrawals {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  amount Int
+  naira_amount Decimal @db.Decimal(12,2)
+  bank_code String
+  account_number String
+  account_name String
+  status String @default("pending")
+  flutterwave_ref String?
+  processed_at DateTime? @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("withdrawals")
+}

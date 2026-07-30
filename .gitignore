@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+
+# Real user data (messages, profiles, contacts) — never commit this.
+# It's already on disk for the one-time import; keep it out of git history.
+scripts/data/*.csv

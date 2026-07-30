@@ -1,0 +1,2489 @@
+{
+  "ad_banners": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "advertiser_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "image_url",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "target_url",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "placements",
+        "kind": "text_array",
+        "nullable": false
+      },
+      {
+        "name": "budget",
+        "kind": "decimal",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "impressions",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "clicks",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "created_by",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "position",
+        "kind": "text",
+        "nullable": false
+      }
+    ]
+  },
+  "admin_audit_logs": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "actor_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "actor_name",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "action",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "target_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "target_label",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "details",
+        "kind": "json",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "advertisers": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "contact_email",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "contact_phone",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "notes",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "created_by",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "app_settings": {
+    "pk": [
+      "key"
+    ],
+    "columns": [
+      {
+        "name": "key",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "value",
+        "kind": "json",
+        "nullable": false
+      },
+      {
+        "name": "label",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "category",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "updated_by",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "broadcast_deliveries": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "channel",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "title",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "body",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "sent_by",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "target_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "success_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "failure_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "error_sample",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "call_logs": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "caller_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "callee_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "call_type",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "coin_purchases": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "amount",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "payment_ref",
+        "kind": "text",
+        "nullable": true
+      }
+    ]
+  },
+  "contest_participants": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "contest_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "rewarded",
+        "kind": "boolean",
+        "nullable": false
+      },
+      {
+        "name": "rewarded_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "joined_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "minutes_at_join",
+        "kind": "int",
+        "nullable": false
+      }
+    ]
+  },
+  "contests": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "title",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "description",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "reward_amount",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "starts_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "ends_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "max_winners",
+        "kind": "int",
+        "nullable": true
+      },
+      {
+        "name": "created_by",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "criteria",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "criteria_label",
+        "kind": "text",
+        "nullable": true
+      }
+    ]
+  },
+  "daily_claims": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "claimed_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "device_contacts": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "owner_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "phone_hash",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "contact_name",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "email_send_log": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "message_id",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "template_name",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "recipient_email",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "error_message",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "metadata",
+        "kind": "json",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "email_send_state": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "retry_after_until",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "batch_size",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "send_delay_ms",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "auth_email_ttl_minutes",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "transactional_email_ttl_minutes",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "email_unsubscribe_tokens": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "token",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "email",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "used_at",
+        "kind": "timestamptz",
+        "nullable": true
+      }
+    ]
+  },
+  "employee_activity_log": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "employee_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "action",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "detail",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "meta",
+        "kind": "json",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "employee_notifications": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "employee_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "invited_user_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "title",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "body",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "read_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "friends": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "requester_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "addressee_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "gift_transactions": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "sender_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "receiver_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "treasure_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "message_id",
+        "kind": "uuid",
+        "nullable": true
+      }
+    ]
+  },
+  "global_notifications": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "title",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "message",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "priority",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "sent_by",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "mentions": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "mentioner_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "mentioned_user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "source_type",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "source_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "context_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "preview",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "read_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "message_reactions": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "message_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "emoji",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "message_views": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "message_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "viewed_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "messages": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "sender_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "type",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "content",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "media_url",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "duration",
+        "kind": "int",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "edited_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "reply_to",
+        "kind": "uuid",
+        "nullable": true
+      }
+    ]
+  },
+  "moderation_reports": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "reporter_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "target_user_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "target_room_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "target_message_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "reason",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "details",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "muted_members": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "muted_by",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "muted_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "muted_until",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "reason",
+        "kind": "text",
+        "nullable": true
+      }
+    ]
+  },
+  "notification_reads": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "notification_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "read_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "page_followers": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "page_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "followed_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "page_post_unique_views": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "post_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "viewer_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "viewed_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "page_posts": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "page_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "author_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "content",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "media_url",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "media_type",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "views_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "likes_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "comments_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "saves_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "pages": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "owner_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "about",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "category",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "profile_image",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "cover_image",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "followers_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "is_monetized",
+        "kind": "boolean",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "pinned_messages": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "message_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "pinned_by",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "pinned_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "post_boosts": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "post_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "owner_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "plan",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "coins_spent",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "reach_target",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "reach_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "duration_hours",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "started_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "ends_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "post_comments": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "post_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "content",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "parent_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "edited_at",
+        "kind": "timestamptz",
+        "nullable": true
+      }
+    ]
+  },
+  "post_likes": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "post_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "post_saves": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "post_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "saved_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "posts": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "content",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "image_url",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "likes_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "comments_count",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "profiles": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "username",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "display_name",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "avatar_url",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "bio",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "interests",
+        "kind": "text_array",
+        "nullable": true
+      },
+      {
+        "name": "is_online",
+        "kind": "boolean",
+        "nullable": true
+      },
+      {
+        "name": "last_seen",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "phone_number",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "total_online_minutes",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "rank",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "is_monetized",
+        "kind": "boolean",
+        "nullable": false
+      },
+      {
+        "name": "coins",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "referral_code",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "purchased_coins",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "earned_coins",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "is_suspended",
+        "kind": "boolean",
+        "nullable": false
+      },
+      {
+        "name": "suspended_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "suspended_reason",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "reward_coins",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "is_premium",
+        "kind": "boolean",
+        "nullable": false
+      },
+      {
+        "name": "is_verified",
+        "kind": "boolean",
+        "nullable": false
+      }
+    ]
+  },
+  "push_subscriptions": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "endpoint",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "p256dh",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "auth",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "referrals": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "referrer_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "referred_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "coins_rewarded",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "room_join_requests": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "fee_paid",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "answers",
+        "kind": "text_array",
+        "nullable": true
+      }
+    ]
+  },
+  "room_members": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "role",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "joined_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "room_reads": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "room_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "last_read_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "rooms": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "description",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "type",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "avatar_url",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "created_by",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "max_members",
+        "kind": "int",
+        "nullable": true
+      },
+      {
+        "name": "is_active",
+        "kind": "boolean",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "rules",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "join_fee",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "join_questions",
+        "kind": "text_array",
+        "nullable": true
+      }
+    ]
+  },
+  "status_reactions": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "status_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "emoji",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "status_views": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "status_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "viewer_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "viewed_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "statuses": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "type",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "media_url",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "caption",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "bg_color",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "text_content",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "expires_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "subscriptions": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "plan",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "amount_ngn",
+        "kind": "decimal",
+        "nullable": false
+      },
+      {
+        "name": "payment_ref",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "current_period_start",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "current_period_end",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "super_admins": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "role",
+        "kind": "text",
+        "nullable": false
+      }
+    ]
+  },
+  "support_conversations": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "subject",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "assigned_agent_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "last_message",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "last_message_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "unread_for_agent",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "unread_for_user",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "support_messages": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "conversation_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "sender_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "is_agent",
+        "kind": "boolean",
+        "nullable": false
+      },
+      {
+        "name": "content",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "suppressed_emails": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "email",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "reason",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "metadata",
+        "kind": "json",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "transactions": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "amount",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "source",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "description",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "reference_id",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "treasures": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "price",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "icon",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "description",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "sort_order",
+        "kind": "int",
+        "nullable": false
+      }
+    ]
+  },
+  "user_blocks": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "blocker_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "blocked_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "reason",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "verification_applications": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "amount_ngn",
+        "kind": "decimal",
+        "nullable": false
+      },
+      {
+        "name": "payment_ref",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "applied_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "reviewed_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "reviewed_by",
+        "kind": "uuid",
+        "nullable": true
+      },
+      {
+        "name": "review_notes",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "is_verified",
+        "kind": "boolean",
+        "nullable": false
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      },
+      {
+        "name": "updated_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  },
+  "withdrawals": {
+    "pk": [
+      "id"
+    ],
+    "columns": [
+      {
+        "name": "id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "user_id",
+        "kind": "uuid",
+        "nullable": false
+      },
+      {
+        "name": "amount",
+        "kind": "int",
+        "nullable": false
+      },
+      {
+        "name": "naira_amount",
+        "kind": "decimal",
+        "nullable": false
+      },
+      {
+        "name": "bank_code",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "account_number",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "account_name",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "status",
+        "kind": "text",
+        "nullable": false
+      },
+      {
+        "name": "flutterwave_ref",
+        "kind": "text",
+        "nullable": true
+      },
+      {
+        "name": "processed_at",
+        "kind": "timestamptz",
+        "nullable": true
+      },
+      {
+        "name": "created_at",
+        "kind": "timestamptz",
+        "nullable": false
+      }
+    ]
+  }
+}
