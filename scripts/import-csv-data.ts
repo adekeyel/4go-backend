@@ -20,6 +20,7 @@
  * Usage:
  *   DATABASE_URL="postgresql://..." tsx scripts/import-csv-data.ts
  */
+import "dotenv/config";
 import fs from "fs";
 import path from "path";
 import { parse } from "csv-parse/sync";
@@ -92,6 +93,14 @@ function readCsv(table: string): Record<string, string>[] | null {
   return parse(content, { delimiter: ";", columns: true, relax_quotes: true, skip_empty_lines: true });
 }
 
+const BATCH_SIZE = 500;
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 async function importTable(client: Client, table: string) {
   const meta = tableMetadata[table];
   const rows = readCsv(table);
@@ -102,23 +111,37 @@ async function importTable(client: Client, table: string) {
   if (rows.length === 0) return 0;
 
   const columns = meta.columns.map((c) => c.name);
+  const quotedCols = columns.map((c) => `"${c}"`).join(", ");
+  const conflictCols = meta.pk.join(", ");
+  const batches = chunk(rows, BATCH_SIZE);
   let inserted = 0;
 
-  for (const row of rows) {
-    const values = meta.columns.map((c) => coerce(row[c.name], c.kind));
-    const placeholders = meta.columns
-      .map((c, i) => (c.kind === "json" ? `$${i + 1}::jsonb` : `$${i + 1}`))
-      .join(", ");
-    const quotedCols = columns.map((c) => `"${c}"`).join(", ");
-    const conflictCols = meta.pk.join(", ");
+  for (const [batchIndex, batch] of batches.entries()) {
+    const values: unknown[] = [];
+    const tuples: string[] = [];
+
+    for (const row of batch) {
+      const rowValues = meta.columns.map((c) => coerce(row[c.name], c.kind));
+      const startIdx = values.length;
+      const placeholders = meta.columns.map((c, i) => {
+        const paramNum = startIdx + i + 1;
+        return c.kind === "json" ? `$${paramNum}::jsonb` : `$${paramNum}`;
+      });
+      tuples.push(`(${placeholders.join(", ")})`);
+      values.push(...rowValues);
+    }
 
     await client.query(
-      `INSERT INTO public.${table} (${quotedCols}) VALUES (${placeholders})
+      `INSERT INTO public.${table} (${quotedCols}) VALUES ${tuples.join(", ")}
        ON CONFLICT (${conflictCols}) DO NOTHING`,
       values
     );
-    inserted++;
+    inserted += batch.length;
+    if (batches.length > 1) {
+      process.stdout.write(`\r  Importing ${table}... ${inserted}/${rows.length} `);
+    }
   }
+  if (batches.length > 1) process.stdout.write("\n");
   return inserted;
 }
 
@@ -135,14 +158,20 @@ async function createPlaceholderUsers(client: Client) {
     12
   );
 
+  const userIds = [...new Set(profileRows.map((r) => r.user_id).filter(Boolean))];
   let created = 0;
-  for (const row of profileRows) {
-    const userId = row.user_id;
-    if (!userId) continue;
+
+  for (const batch of chunk(userIds, BATCH_SIZE)) {
+    const values: unknown[] = [];
+    const tuples: string[] = [];
+    for (const userId of batch) {
+      tuples.push(`($${values.length + 1}, $${values.length + 2})`);
+      values.push(userId, unusableHash);
+    }
     const result = await client.query(
-      `INSERT INTO public.users (id, password_hash) VALUES ($1, $2)
+      `INSERT INTO public.users (id, password_hash) VALUES ${tuples.join(", ")}
        ON CONFLICT (id) DO NOTHING`,
-      [userId, unusableHash]
+      values
     );
     created += result.rowCount ?? 0;
   }

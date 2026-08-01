@@ -25,6 +25,13 @@ function refreshCookieOptions() {
   };
 }
 
+function getRefreshToken(req: import("express").Request): string | undefined {
+  // Web clients: httpOnly cookie. Mobile clients (React Native has no cookie
+  // jar by default): the refresh token is also returned in the JSON body on
+  // login/signup/refresh, and the mobile app sends it back explicitly here.
+  return req.cookies?.[REFRESH_COOKIE] || req.body?.refreshToken;
+}
+
 async function issueSession(userId: string, userAgent: string | undefined, ip: string | undefined) {
   const session = await prisma.refreshSession.create({
     data: {
@@ -79,7 +86,9 @@ authRouter.post(
     // Fire-and-forget email verification; signup should not fail if email sending fails.
     sendVerificationEmail(email, user.id).catch((err) => console.error("verification email failed", err));
 
-    res.status(201).json({ accessToken, userId: user.id });
+    // refreshToken is included for mobile clients (no cookie jar); web clients
+    // ignore this field and rely on the httpOnly cookie set above.
+    res.status(201).json({ accessToken, refreshToken, userId: user.id });
   })
 );
 
@@ -108,14 +117,14 @@ authRouter.post(
     const { accessToken, refreshToken } = await issueSession(user.id, req.headers["user-agent"], req.ip);
     res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
 
-    res.json({ accessToken, userId: user.id });
+    res.json({ accessToken, refreshToken, userId: user.id });
   })
 );
 
 authRouter.post(
   "/refresh",
   asyncHandler(async (req, res) => {
-    const token = req.cookies?.[REFRESH_COOKIE];
+    const token = getRefreshToken(req);
     if (!token) throw new ApiError(401, "No refresh token");
 
     let payload;
@@ -138,14 +147,14 @@ authRouter.post(
     const { accessToken, refreshToken } = await issueSession(session.user_id, req.headers["user-agent"], req.ip);
     res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
 
-    res.json({ accessToken, userId: session.user_id });
+    res.json({ accessToken, refreshToken, userId: session.user_id });
   })
 );
 
 authRouter.post(
   "/logout",
   asyncHandler(async (req, res) => {
-    const token = req.cookies?.[REFRESH_COOKIE];
+    const token = getRefreshToken(req);
     if (token) {
       try {
         const payload = verifyRefreshToken(token);

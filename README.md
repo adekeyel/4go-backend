@@ -57,7 +57,7 @@ from Supabase's dashboard. Every row imported cleanly:
 npm install
 npx prisma generate
 npx prisma migrate dev --name init   # creates the schema on your new DB
-DATABASE_URL="<your new Postgres URL>" npm run import:data
+npm run import:data                  # reads DATABASE_URL from your .env file
 ```
 
 ### About login credentials — read this
