@@ -17,6 +17,7 @@ import { uploadsRouter } from "@/routes/uploads";
 import { walletRouter } from "@/routes/wallet";
 import { paymentsRouter } from "@/routes/payments";
 import { adminRouter } from "@/routes/admin";
+import { callsRouter } from "@/routes/calls";
 
 const app = express();
 
@@ -43,6 +44,7 @@ app.use("/api/uploads", uploadsRouter);
 app.use("/api/wallet", walletRouter);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/calls", callsRouter);
 
 app.use(errorHandler);
 

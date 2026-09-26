@@ -3,6 +3,7 @@ import { Server, Socket } from "socket.io";
 import { verifyAccessToken } from "@/utils/jwt";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
+import { hasCallPermission, CallType } from "@/lib/callPermissions";
 
 interface AuthedSocket extends Socket {
   data: { userId: string };
@@ -80,11 +81,61 @@ export function initSockets(httpServer: HttpServer) {
       s.to(`room:${roomId}`).emit("typing:stop", { userId, roomId });
     });
 
-    // --- Call signaling (replaces the Supabase `call-signal-${roomId}` broadcast channel) ---
-    // Payload shape is intentionally opaque here — it's whatever the WebRTC
-    // client (useCall.ts) needs: { type: 'offer'|'answer'|'ice-candidate'|'end'|'reject', ... }
-    s.on("call:signal", ({ roomId, signal }: { roomId: string; signal: unknown }) => {
-      s.to(`room:${roomId}`).emit("call:signal", { fromUserId: userId, signal });
+    // --- Call signaling ---
+    // Two events cover the whole flow, both addressed directly to the
+    // recipient's personal `user:${id}` room so it reaches them wherever
+    // they are in the app (not just while a specific chat screen is open):
+    //
+    //  call:invite  caller -> callee   { callId, roomId, calleeId, callType, callerName, callerAvatarUrl, sdp }
+    //  call:signal  either direction   { callId, to, signal: { type: 'offer'|'answer'|'ice'|'ready'|'reject'|'leave', ... } }
+    //
+    // The REST route (POST /api/calls) is the source of truth for the
+    // call_logs row and already checked the caller's rank; this handler
+    // re-checks the *callee's* rank before ever letting the call ring, so a
+    // client that skipped/patched the UI gate still can't receive a call
+    // type their rank doesn't allow.
+    s.on(
+      "call:invite",
+      async (payload: {
+        callId: string;
+        roomId: string;
+        calleeId: string;
+        callType: CallType;
+        callerName: string;
+        callerAvatarUrl?: string | null;
+        sdp: unknown;
+      }) => {
+        const calleeProfile = await prisma.profiles.findUnique({
+          where: { user_id: payload.calleeId },
+          select: { rank: true },
+        });
+
+        if (!hasCallPermission(payload.callType, calleeProfile?.rank)) {
+          await prisma.callLogs
+            .update({ where: { id: payload.callId }, data: { status: "declined", duration_seconds: 0 } })
+            .catch(() => undefined);
+          s.emit("call:signal", {
+            callId: payload.callId,
+            from: payload.calleeId,
+            signal: { type: "reject", reason: "rank_not_permitted" },
+          });
+          return;
+        }
+
+        getIo().to(`user:${payload.calleeId}`).emit("call:invite", {
+          callId: payload.callId,
+          roomId: payload.roomId,
+          callerId: userId,
+          callType: payload.callType,
+          callerName: payload.callerName,
+          callerAvatarUrl: payload.callerAvatarUrl ?? null,
+          sdp: payload.sdp,
+        });
+      }
+    );
+
+    s.on("call:signal", ({ callId, to, signal }: { callId: string; to: string; signal: unknown }) => {
+      getIo().to(`user:${to}`).emit("call:signal", { callId, from: userId, signal });
     });
 
     // --- Status/story reactions live-update channel ---

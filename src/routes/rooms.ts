@@ -116,6 +116,59 @@ roomsRouter.post(
   })
 );
 
+// --- Direct messages (1:1 rooms) ---
+// Ported from the old `get_or_create_dm_room` Postgres function: find the
+// existing type="dm" room shared by these two users, or create one.
+roomsRouter.post(
+  "/dm/:userId",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const otherUserId = req.params.userId;
+    if (otherUserId === req.userId) throw new ApiError(400, "Can't start a DM with yourself");
+
+    const otherProfile = await prisma.profiles.findUnique({ where: { user_id: otherUserId } });
+    if (!otherProfile) throw new ApiError(404, "User not found");
+
+    const myMemberships = await prisma.roomMembers.findMany({
+      where: { user_id: req.userId! },
+      select: { room_id: true },
+    });
+    const myRoomIds = myMemberships.map((m) => m.room_id);
+
+    if (myRoomIds.length) {
+      const sharedMemberships = await prisma.roomMembers.findMany({
+        where: { user_id: otherUserId, room_id: { in: myRoomIds } },
+        select: { room_id: true },
+      });
+      if (sharedMemberships.length) {
+        const existingDm = await prisma.rooms.findFirst({
+          where: { id: { in: sharedMemberships.map((m) => m.room_id) }, type: "dm" },
+        });
+        if (existingDm) return res.json(existingDm);
+      }
+    }
+
+    const room = await prisma.$transaction(async (tx) => {
+      const r = await tx.rooms.create({
+        data: {
+          name: otherProfile.display_name || otherProfile.username || "Direct Message",
+          type: "dm",
+          created_by: req.userId!,
+          max_members: 2,
+        },
+      });
+      await tx.roomMembers.createMany({
+        data: [
+          { room_id: r.id, user_id: req.userId!, role: "member" },
+          { room_id: r.id, user_id: otherUserId, role: "member" },
+        ],
+      });
+      return r;
+    });
+    res.status(201).json(room);
+  })
+);
+
 roomsRouter.get(
   "/:roomId/members",
   requireAuth,
