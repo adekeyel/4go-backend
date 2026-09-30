@@ -27,6 +27,12 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   if (err instanceof ZodError) {
     return res.status(400).json({ error: "Invalid request", details: err.flatten() });
   }
+  // Prisma unique-constraint violation, in case a route didn't pre-check
+  // (e.g. a race between two requests) — surface as a clean 409 instead of
+  // leaking a raw Prisma error as a 500.
+  if (err && typeof err === "object" && "code" in err && (err as { code?: string }).code === "P2002") {
+    return res.status(409).json({ error: "That value is already in use" });
+  }
   console.error(err);
   return res.status(500).json({ error: env.isProd ? "Internal server error" : String(err) });
 }

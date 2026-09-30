@@ -49,7 +49,10 @@ async function issueSession(userId: string, userAgent: string | undefined, ip: s
 const signupSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8, "Password must be at least 8 characters"),
-  username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/, "Letters, numbers, underscores only"),
+  // The native app collects a real username at signup; the web app doesn't
+  // ask for one until the post-login "set up your profile" step, so this is
+  // left null here rather than auto-generating a throwaway one.
+  username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/, "Letters, numbers, underscores only").optional(),
   displayName: z.string().min(1).max(60).optional(),
 });
 
@@ -62,8 +65,12 @@ authRouter.post(
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) throw new ApiError(409, "An account with this email already exists");
 
-    const existingUsername = await prisma.profiles.findUnique({ where: { username: body.username } });
-    if (existingUsername) throw new ApiError(409, "That username is taken");
+    let username: string | null = null;
+    if (body.username) {
+      const taken = await prisma.profiles.findUnique({ where: { username: body.username } });
+      if (taken) throw new ApiError(409, "That username is taken");
+      username = body.username;
+    }
 
     const password_hash = await hashPassword(body.password);
 
@@ -72,8 +79,8 @@ authRouter.post(
       await tx.profiles.create({
         data: {
           user_id: u.id,
-          username: body.username,
-          display_name: body.displayName ?? body.username,
+          username,
+          display_name: body.displayName ?? username ?? email.split("@")[0],
           referral_code: crypto.randomBytes(4).toString("hex"),
         },
       });

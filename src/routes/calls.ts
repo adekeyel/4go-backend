@@ -5,6 +5,7 @@ import { requireAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { assertRoomMember } from "./rooms";
 import { hasCallPermission } from "@/lib/callPermissions";
+import { emitToRoom, emitToUser } from "@/sockets";
 
 export const callsRouter = Router();
 callsRouter.use(requireAuth);
@@ -35,6 +36,7 @@ callsRouter.post(
     const call = await prisma.callLogs.create({
       data: { room_id: roomId, caller_id: req.userId!, callee_id: calleeId, call_type: callType, status: "cancelled" },
     });
+    emitToRoom(roomId, "call:log", call);
     res.status(201).json(call);
   })
 );
@@ -58,7 +60,23 @@ callsRouter.patch(
       where: { id: call.id },
       data: { status: body.status, duration_seconds: body.duration_seconds ?? call.duration_seconds },
     });
+    emitToRoom(updated.room_id, "call:log", updated);
+    emitToUser(updated.callee_id, "call:updated", updated);
     res.json(updated);
+  })
+);
+
+// Missed calls for the current user (as callee), optionally only those after
+// `since` — drives the "missed calls" badge.
+callsRouter.get(
+  "/missed",
+  asyncHandler(async (req, res) => {
+    const since = typeof req.query.since === "string" ? new Date(req.query.since) : undefined;
+    const calls = await prisma.callLogs.findMany({
+      where: { callee_id: req.userId!, status: "missed", ...(since ? { created_at: { gt: since } } : {}) },
+      select: { id: true, room_id: true, created_at: true },
+    });
+    res.json(calls);
   })
 );
 

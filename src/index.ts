@@ -18,6 +18,8 @@ import { walletRouter } from "@/routes/wallet";
 import { paymentsRouter } from "@/routes/payments";
 import { adminRouter } from "@/routes/admin";
 import { callsRouter } from "@/routes/calls";
+import { moderationRouter } from "@/routes/moderation";
+import { mentionsRouter } from "@/routes/mentions";
 
 const app = express();
 
@@ -45,6 +47,8 @@ app.use("/api/wallet", walletRouter);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/calls", callsRouter);
+app.use("/api/moderation", moderationRouter);
+app.use("/api/mentions", mentionsRouter);
 
 app.use(errorHandler);
 

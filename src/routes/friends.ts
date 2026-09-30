@@ -118,6 +118,76 @@ friendsRouter.delete(
   })
 );
 
+// --- People you may know: shares a room, isn't already a friend/pending/blocked ---
+friendsRouter.get(
+  "/suggestions",
+  asyncHandler(async (req, res) => {
+    const userId = req.userId!;
+    const limit = Math.min(Number(req.query.limit) || 20, 50);
+
+    const myRoomIds = (await prisma.roomMembers.findMany({ where: { user_id: userId }, select: { room_id: true } })).map((r) => r.room_id);
+    if (!myRoomIds.length) return res.json([]);
+
+    const coMembers = await prisma.roomMembers.groupBy({
+      by: ["user_id"],
+      where: { room_id: { in: myRoomIds }, user_id: { not: userId } },
+      _count: { room_id: true },
+    });
+    if (!coMembers.length) return res.json([]);
+
+    const [existingFriends, blocks] = await Promise.all([
+      prisma.friends.findMany({ where: { OR: [{ requester_id: userId }, { addressee_id: userId }] } }),
+      prisma.userBlocks.findMany({ where: { OR: [{ blocker_id: userId }, { blocked_id: userId }] } }),
+    ]);
+    const excludeIds = new Set<string>([
+      ...existingFriends.map((f) => (f.requester_id === userId ? f.addressee_id : f.requester_id)),
+      ...blocks.map((b) => (b.blocker_id === userId ? b.blocked_id : b.blocker_id)),
+    ]);
+
+    const candidates = coMembers
+      .filter((c) => !excludeIds.has(c.user_id))
+      .sort((a, b) => b._count.room_id - a._count.room_id)
+      .slice(0, limit);
+    if (!candidates.length) return res.json([]);
+    const candidateIds = candidates.map((c) => c.user_id);
+
+    const [profiles, myFriendRows, candidateFriendRows] = await Promise.all([
+      prisma.profiles.findMany({
+        where: { user_id: { in: candidateIds } },
+        select: { user_id: true, username: true, display_name: true, avatar_url: true },
+      }),
+      prisma.friends.findMany({ where: { status: "accepted", OR: [{ requester_id: userId }, { addressee_id: userId }] } }),
+      prisma.friends.findMany({
+        where: {
+          status: "accepted",
+          OR: [{ requester_id: { in: candidateIds } }, { addressee_id: { in: candidateIds } }],
+        },
+      }),
+    ]);
+    const myFriendIds = new Set(myFriendRows.map((f) => (f.requester_id === userId ? f.addressee_id : f.requester_id)));
+    const candidateFriendMap = new Map<string, Set<string>>();
+    for (const cid of candidateIds) candidateFriendMap.set(cid, new Set());
+    for (const row of candidateFriendRows) {
+      if (candidateFriendMap.has(row.requester_id)) candidateFriendMap.get(row.requester_id)!.add(row.addressee_id);
+      if (candidateFriendMap.has(row.addressee_id)) candidateFriendMap.get(row.addressee_id)!.add(row.requester_id);
+    }
+
+    const profileMap = new Map(profiles.map((p) => [p.user_id, p]));
+    const result = candidates.map((c) => {
+      const mutualFriends = [...(candidateFriendMap.get(c.user_id) ?? [])].filter((id) => myFriendIds.has(id)).length;
+      return {
+        user_id: c.user_id,
+        display_name: profileMap.get(c.user_id)?.display_name ?? null,
+        username: profileMap.get(c.user_id)?.username ?? null,
+        avatar_url: profileMap.get(c.user_id)?.avatar_url ?? null,
+        shared_rooms: c._count.room_id,
+        mutual_friends: mutualFriends,
+      };
+    });
+    res.json(result);
+  })
+);
+
 const blockSchema = z.object({ blockedId: z.string().uuid(), reason: z.string().max(200).optional() });
 
 friendsRouter.post(
@@ -153,5 +223,16 @@ friendsRouter.delete(
       })
       .catch(() => {});
     res.status(204).send();
+  })
+);
+
+friendsRouter.get(
+  "/block",
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.userBlocks.findMany({
+      where: { blocker_id: req.userId! },
+      orderBy: { created_at: "desc" },
+    });
+    res.json(rows);
   })
 );

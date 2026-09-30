@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, optionalAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
+import { emitToRoom } from "@/sockets";
 
 export const roomsRouter = Router();
 
@@ -25,12 +26,27 @@ roomsRouter.get(
   "/",
   optionalAuth,
   asyncHandler(async (req, res) => {
+    const types = typeof req.query.type === "string" ? req.query.type.split(",") : ["public"];
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : undefined;
+
     const rooms = await prisma.rooms.findMany({
-      where: { type: "public", is_active: true },
+      where: {
+        type: { in: types },
+        is_active: true,
+        ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
+      },
       orderBy: { created_at: "desc" },
       take: 50,
     });
-    res.json(rooms);
+    const roomIds = rooms.map((r) => r.id);
+    const counts = roomIds.length
+      ? await prisma.roomMembers.groupBy({ by: ["room_id"], where: { room_id: { in: roomIds } }, _count: { room_id: true } })
+      : [];
+    const countMap = new Map(counts.map((c) => [c.room_id, c._count.room_id]));
+    const enriched = rooms
+      .map((r) => ({ ...r, member_count: countMap.get(r.id) || 0 }))
+      .sort((a, b) => b.member_count - a.member_count);
+    res.json(enriched);
   })
 );
 
@@ -47,10 +63,47 @@ roomsRouter.get(
   })
 );
 
+// Unread message count per room for the current user (replaces the old
+// get_unread_counts RPC): messages from others created after the user's
+// last_read_at for that room (or all of them if they've never opened it).
+roomsRouter.get(
+  "/unread-counts",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const memberships = await prisma.roomMembers.findMany({ where: { user_id: req.userId! }, select: { room_id: true } });
+    const roomIds = memberships.map((m) => m.room_id);
+    if (!roomIds.length) return res.json([]);
+
+    const reads = await prisma.roomReads.findMany({ where: { user_id: req.userId!, room_id: { in: roomIds } } });
+    const readMap = new Map(reads.map((r) => [r.room_id, r.last_read_at]));
+
+    const counts = await Promise.all(
+      roomIds.map(async (room_id) => {
+        const last = readMap.get(room_id);
+        const unread_count = await prisma.messages.count({
+          where: {
+            room_id,
+            sender_id: { not: req.userId! },
+            ...(last ? { created_at: { gt: last } } : {}),
+          },
+        });
+        return { room_id, unread_count };
+      })
+    );
+    res.json(counts.filter((c) => c.unread_count > 0));
+  })
+);
+
+const ROOM_CREATE_RANKS = ["Learner", "Professional", "Expert", "Master"];
+const PRIVATE_ROOM_RANKS = ["Expert", "Master"];
+
 const createRoomSchema = z.object({
   name: z.string().min(1).max(80),
   description: z.string().max(500).optional(),
   type: z.enum(["public", "private"]).default("public"),
+  rules: z.string().max(500).optional(),
+  join_fee: z.number().int().min(0).max(100000).optional(),
+  join_questions: z.array(z.string().max(200)).max(5).optional(),
 });
 
 roomsRouter.post(
@@ -58,6 +111,16 @@ roomsRouter.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     const body = createRoomSchema.parse(req.body);
+
+    const me = await prisma.profiles.findUnique({ where: { user_id: req.userId! }, select: { rank: true } });
+    const rank = me?.rank || "Amateur";
+    if (!ROOM_CREATE_RANKS.includes(rank)) {
+      throw new ApiError(403, "You need at least the Learner rank to create rooms.");
+    }
+    if (body.type === "private" && !PRIVATE_ROOM_RANKS.includes(rank)) {
+      throw new ApiError(403, "You need at least the Expert rank to create a private room.");
+    }
+
     const room = await prisma.$transaction(async (tx) => {
       const r = await tx.rooms.create({
         data: {
@@ -65,6 +128,13 @@ roomsRouter.post(
           description: body.description ?? null,
           type: body.type,
           created_by: req.userId!,
+          ...(body.type === "private"
+            ? {
+                rules: body.rules ?? null,
+                join_fee: body.join_fee ?? 0,
+                join_questions: body.join_questions ?? [],
+              }
+            : {}),
         },
       });
       await tx.roomMembers.create({ data: { room_id: r.id, user_id: req.userId!, role: "admin" } });
@@ -80,6 +150,25 @@ roomsRouter.get(
   asyncHandler(async (req, res) => {
     const room = await prisma.rooms.findUnique({ where: { id: req.params.roomId } });
     if (!room) throw new ApiError(404, "Room not found");
+    res.json(room);
+  })
+);
+
+const updateRoomSchema = z.object({
+  name: z.string().min(1).max(80).optional(),
+  description: z.string().max(500).optional(),
+  rules: z.string().max(500).optional(),
+  join_fee: z.number().int().min(0).max(100000).optional(),
+  join_questions: z.array(z.string().max(200)).max(5).optional(),
+});
+
+roomsRouter.patch(
+  "/:roomId",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomAdmin(req.params.roomId, req.userId!);
+    const body = updateRoomSchema.parse(req.body);
+    const room = await prisma.rooms.update({ where: { id: req.params.roomId }, data: body });
     res.json(room);
   })
 );
@@ -187,9 +276,114 @@ roomsRouter.get(
   })
 );
 
+// One-stop status check for a room's chat screen: am I a member/admin, am I
+// muted, and (if not a member) what's my join-request status. Consolidates
+// what used to be three separate Supabase queries.
+roomsRouter.get(
+  "/:roomId/me",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const [membership, mute, joinRequest] = await Promise.all([
+      prisma.roomMembers.findUnique({ where: { room_id_user_id: { room_id: req.params.roomId, user_id: req.userId! } } }),
+      prisma.mutedMembers.findUnique({ where: { room_id_user_id: { room_id: req.params.roomId, user_id: req.userId! } } }),
+      prisma.roomJoinRequests.findUnique({ where: { room_id_user_id: { room_id: req.params.roomId, user_id: req.userId! } } }),
+    ]);
+    res.json({
+      isMember: !!membership,
+      role: membership?.role ?? null,
+      isMuted: !!mute && (!mute.muted_until || mute.muted_until > new Date()),
+      joinRequestStatus: joinRequest?.status ?? null,
+    });
+  })
+);
+
+// --- Read receipts (replaces the room_reads RLS + realtime subscription) ---
+
+roomsRouter.post(
+  "/:roomId/read",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    const row = await prisma.roomReads.upsert({
+      where: { room_id_user_id: { room_id: req.params.roomId, user_id: req.userId! } },
+      create: { room_id: req.params.roomId, user_id: req.userId!, last_read_at: new Date() },
+      update: { last_read_at: new Date() },
+    });
+    emitToRoom(req.params.roomId, "room:read", { roomId: req.params.roomId, userId: req.userId!, lastReadAt: row.last_read_at });
+    res.json(row);
+  })
+);
+
+roomsRouter.get(
+  "/:roomId/reads",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    const rows = await prisma.roomReads.findMany({ where: { room_id: req.params.roomId } });
+    res.json(rows);
+  })
+);
+
+// --- Pinned messages (group chats only, mirrors the pinned_messages table) ---
+
+roomsRouter.get(
+  "/:roomId/pinned",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    const pins = await prisma.pinnedMessages.findMany({ where: { room_id: req.params.roomId }, orderBy: { pinned_at: "desc" } });
+    const ids = pins.map((p) => p.message_id);
+    const messages = ids.length ? await prisma.messages.findMany({ where: { id: { in: ids } } }) : [];
+    const messageMap = new Map(messages.map((m) => [m.id, m]));
+    res.json(pins.map((p) => ({ ...p, message: messageMap.get(p.message_id) })).filter((p) => p.message));
+  })
+);
+
+roomsRouter.post(
+  "/:roomId/pinned/:messageId",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    const message = await prisma.messages.findUnique({ where: { id: req.params.messageId } });
+    if (!message || message.room_id !== req.params.roomId) throw new ApiError(404, "Message not found");
+
+    const pin = await prisma.pinnedMessages.upsert({
+      where: { room_id_message_id: { room_id: req.params.roomId, message_id: req.params.messageId } },
+      create: { room_id: req.params.roomId, message_id: req.params.messageId, pinned_by: req.userId! },
+      update: {},
+    });
+    emitToRoom(req.params.roomId, "message:pin", { roomId: req.params.roomId, messageId: req.params.messageId });
+    res.status(201).json(pin);
+  })
+);
+
+roomsRouter.delete(
+  "/:roomId/pinned/:messageId",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    await prisma.pinnedMessages
+      .delete({ where: { room_id_message_id: { room_id: req.params.roomId, message_id: req.params.messageId } } })
+      .catch(() => {});
+    emitToRoom(req.params.roomId, "message:unpin", { roomId: req.params.roomId, messageId: req.params.messageId });
+    res.status(204).send();
+  })
+);
+
 // --- Private room join requests (replaces the room_join_requests RLS + approve/reject RPCs) ---
 
 const joinRequestSchema = z.object({ answers: z.array(z.string()).optional() });
+
+roomsRouter.get(
+  "/:roomId/join-requests/me",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const request = await prisma.roomJoinRequests.findUnique({
+      where: { room_id_user_id: { room_id: req.params.roomId, user_id: req.userId! } },
+    });
+    res.json(request);
+  })
+);
 
 roomsRouter.post(
   "/:roomId/join-requests",
@@ -199,16 +393,55 @@ roomsRouter.post(
     const room = await prisma.rooms.findUnique({ where: { id: req.params.roomId } });
     if (!room) throw new ApiError(404, "Room not found");
 
-    const request = await prisma.roomJoinRequests.create({
-      data: {
-        room_id: room.id,
-        user_id: req.userId!,
-        fee_paid: room.join_fee ?? 0,
-        answers: answers ?? [],
-        status: "pending",
-      },
+    const existing = await prisma.roomJoinRequests.findUnique({
+      where: { room_id_user_id: { room_id: room.id, user_id: req.userId! } },
+    });
+    if (existing?.status === "pending") throw new ApiError(409, "Join request already sent");
+    if (existing?.status === "approved") throw new ApiError(409, "You're already a member");
+
+    const fee = room.join_fee ?? 0;
+
+    // Fee (if any) is deducted atomically with creating the request, inside
+    // one transaction — no separate client-side deduct/refund dance, so
+    // there's no window for a failed request to leave someone short. Uses
+    // upsert since (room_id, user_id) is unique — a prior rejected request
+    // just gets reopened rather than colliding.
+    const request = await prisma.$transaction(async (tx) => {
+      if (fee > 0) {
+        const updated = await tx.profiles.updateMany({
+          where: { user_id: req.userId!, coins: { gte: fee } },
+          data: { coins: { decrement: fee } },
+        });
+        if (updated.count === 0) throw new ApiError(400, `Not enough coins. You need ${fee} coins to request.`);
+      }
+      return tx.roomJoinRequests.upsert({
+        where: { room_id_user_id: { room_id: room.id, user_id: req.userId! } },
+        create: { room_id: room.id, user_id: req.userId!, fee_paid: fee, answers: answers ?? [], status: "pending" },
+        update: { fee_paid: fee, answers: answers ?? [], status: "pending" },
+      });
     });
     res.status(201).json(request);
+  })
+);
+
+roomsRouter.get(
+  "/:roomId/join-requests",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomAdmin(req.params.roomId, req.userId!);
+    const requests = await prisma.roomJoinRequests.findMany({
+      where: { room_id: req.params.roomId, status: "pending" },
+      orderBy: { created_at: "asc" },
+    });
+    const ids = requests.map((r) => r.user_id);
+    const profiles = ids.length
+      ? await prisma.profiles.findMany({
+          where: { user_id: { in: ids } },
+          select: { user_id: true, username: true, display_name: true, avatar_url: true },
+        })
+      : [];
+    const profileMap = new Map(profiles.map((p) => [p.user_id, p]));
+    res.json(requests.map((r) => ({ ...r, profile: profileMap.get(r.user_id) })));
   })
 );
 
@@ -229,7 +462,15 @@ roomsRouter.patch(
         prisma.roomMembers.create({ data: { room_id: request.room_id, user_id: request.user_id, role: "member" } }),
       ]);
     } else {
-      await prisma.roomJoinRequests.update({ where: { id: request.id }, data: { status: "rejected" } });
+      await prisma.$transaction(async (tx) => {
+        await tx.roomJoinRequests.update({ where: { id: request.id }, data: { status: "rejected" } });
+        if (request.fee_paid > 0) {
+          await tx.profiles.updateMany({
+            where: { user_id: request.user_id },
+            data: { coins: { increment: request.fee_paid } },
+          });
+        }
+      });
     }
     res.json({ status: decision === "approve" ? "approved" : "rejected" });
   })

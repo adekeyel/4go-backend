@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireSuperAdmin } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { emitToUser } from "@/sockets";
+import { refundEarnedCoins } from "@/lib/coins";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireSuperAdmin);
@@ -105,14 +106,16 @@ adminRouter.patch(
     if (!withdrawal) throw new ApiError(404, "Withdrawal not found");
 
     if (decision === "reject") {
-      // Refund the reserved coins back to the user.
-      await prisma.$transaction([
-        prisma.withdrawals.update({ where: { id: withdrawal.id }, data: { status: "rejected", processed_at: new Date() } }),
-        prisma.profiles.update({
-          where: { user_id: withdrawal.user_id },
-          data: { coins: { increment: withdrawal.amount }, earned_coins: { increment: withdrawal.amount } },
-        }),
-      ]);
+      // Ports admin_reject_withdrawal: only pending/approved can be rejected. The status-guarded
+      // update is atomic, so a double click (or two admins) can't refund the same withdrawal twice.
+      await prisma.$transaction(async (tx) => {
+        const { count } = await tx.withdrawals.updateMany({
+          where: { id: withdrawal.id, status: { in: ["pending", "approved"] } },
+          data: { status: "rejected", processed_at: new Date() },
+        });
+        if (count === 0) throw new ApiError(409, "This withdrawal has already been processed");
+        await refundEarnedCoins(tx, withdrawal.user_id, withdrawal.amount, "Withdrawal rejected by admin");
+      });
     } else {
       await prisma.withdrawals.update({
         where: { id: withdrawal.id },

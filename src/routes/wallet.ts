@@ -3,6 +3,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
+import { lockProfile, creditRewardCoins } from "@/lib/coins";
+import { sendGift, spendCoinsForProgress } from "@/lib/economy";
 
 export const walletRouter = Router();
 walletRouter.use(requireAuth);
@@ -20,6 +22,31 @@ walletRouter.get(
       is_premium: profile.is_premium,
       rank: profile.rank,
     });
+  })
+);
+
+// Active premium subscription (replaces the direct subscriptions table read).
+walletRouter.get(
+  "/subscription",
+  asyncHandler(async (req, res) => {
+    const sub = await prisma.subscriptions.findFirst({
+      where: { user_id: req.userId!, status: "active" },
+      orderBy: { current_period_end: "desc" },
+      select: { plan: true, status: true, current_period_end: true },
+    });
+    res.json(sub && sub.current_period_end > new Date() ? sub : null);
+  })
+);
+
+// Latest verification application for the current user.
+walletRouter.get(
+  "/verification",
+  asyncHandler(async (req, res) => {
+    const app = await prisma.verificationApplications.findFirst({
+      where: { user_id: req.userId! },
+      orderBy: { created_at: "desc" },
+    });
+    res.json(app);
   })
 );
 
@@ -65,6 +92,8 @@ walletRouter.post(
     const body = withdrawSchema.parse(req.body);
 
     const withdrawal = await prisma.$transaction(async (tx) => {
+      // Row lock (the SQL used FOR UPDATE) so two parallel requests can't both pass the balance checks.
+      await lockProfile(tx, req.userId!);
       const profile = await tx.profiles.findUnique({ where: { user_id: req.userId! } });
       if (!profile) throw new ApiError(404, "Profile not found");
       if (!["Master", "King"].includes(profile.rank)) {
@@ -187,41 +216,97 @@ walletRouter.get(
 walletRouter.post(
   "/daily-claim",
   asyncHandler(async (req, res) => {
-    const claimsToday = await prisma.dailyClaims.count({
-      where: { user_id: req.userId!, claimed_at: { gte: utcDayStart() } },
-    });
-    if (claimsToday >= MAX_CLAIMS_PER_DAY) {
-      throw new ApiError(429, "You have already claimed 3 times today");
-    }
+    // Checks and the credit share one transaction behind a row lock, so firing
+    // several claim requests in parallel can't bypass the cooldown or daily cap.
+    await prisma.$transaction(async (tx) => {
+      await lockProfile(tx, req.userId!);
 
-    const last = await prisma.dailyClaims.findFirst({
-      where: { user_id: req.userId! },
-      orderBy: { claimed_at: "desc" },
-    });
-    if (last) {
-      const hoursSince = (Date.now() - last.claimed_at.getTime()) / 3600_000;
-      if (hoursSince < CLAIM_COOLDOWN_HOURS) {
-        const nextClaimAt = new Date(last.claimed_at.getTime() + CLAIM_COOLDOWN_HOURS * 3600_000);
-        throw new ApiError(429, `Please wait ${Math.ceil(CLAIM_COOLDOWN_HOURS - hoursSince)} more hour(s) before claiming again`);
+      const claimsToday = await tx.dailyClaims.count({
+        where: { user_id: req.userId!, claimed_at: { gte: utcDayStart() } },
+      });
+      if (claimsToday >= MAX_CLAIMS_PER_DAY) {
+        throw new ApiError(429, "You have already claimed 3 times today");
       }
-    }
 
-    await prisma.$transaction([
-      prisma.dailyClaims.create({ data: { user_id: req.userId! } }),
-      prisma.profiles.update({
+      const last = await tx.dailyClaims.findFirst({
         where: { user_id: req.userId! },
-        data: { reward_coins: { increment: CLAIM_REWARD_COINS }, coins: { increment: CLAIM_REWARD_COINS } },
-      }),
-      prisma.transactions.create({
-        data: {
-          user_id: req.userId!,
-          amount: CLAIM_REWARD_COINS,
-          source: "reward",
-          description: "Daily activity reward",
-        },
-      }),
-    ]);
+        orderBy: { claimed_at: "desc" },
+      });
+      if (last) {
+        const hoursSince = (Date.now() - last.claimed_at.getTime()) / 3600_000;
+        if (hoursSince < CLAIM_COOLDOWN_HOURS) {
+          throw new ApiError(429, `Please wait ${Math.ceil(CLAIM_COOLDOWN_HOURS - hoursSince)} more hour(s) before claiming again`);
+        }
+      }
+
+      await tx.dailyClaims.create({ data: { user_id: req.userId! } });
+      await creditRewardCoins(tx, req.userId!, CLAIM_REWARD_COINS, "Daily activity reward");
+    });
 
     res.json({ coinsAwarded: CLAIM_REWARD_COINS });
+  })
+);
+
+// --- Treasures, gifts and level-up (ports of send_gift, send_gift_to_post, spend_coins_for_progress) ---
+
+walletRouter.get(
+  "/treasures",
+  asyncHandler(async (_req, res) => {
+    res.json(await prisma.treasures.findMany({ orderBy: { sort_order: "asc" } }));
+  })
+);
+
+const giftSchema = z.object({
+  receiver_id: z.string().uuid(),
+  treasure_id: z.string().uuid(),
+  room_id: z.string().uuid().nullish(),
+});
+
+// Gift a user from a room. Receiver gets spendable reward coins.
+walletRouter.post(
+  "/gifts",
+  asyncHandler(async (req, res) => {
+    const body = giftSchema.parse(req.body);
+    const result = await prisma.$transaction((tx) =>
+      sendGift(tx, {
+        senderId: req.userId!,
+        receiverId: body.receiver_id,
+        treasureId: body.treasure_id,
+        roomId: body.room_id,
+      })
+    );
+    res.status(201).json(result);
+  })
+);
+
+const postGiftSchema = giftSchema.extend({ message_id: z.string().uuid() });
+
+// Gift on a post. Receiver must be monetized; coins land in their withdrawable balance.
+walletRouter.post(
+  "/gifts/post",
+  asyncHandler(async (req, res) => {
+    const body = postGiftSchema.parse(req.body);
+    const result = await prisma.$transaction((tx) =>
+      sendGift(tx, {
+        senderId: req.userId!,
+        receiverId: body.receiver_id,
+        treasureId: body.treasure_id,
+        roomId: body.room_id,
+        messageId: body.message_id,
+      })
+    );
+    res.status(201).json(result);
+  })
+);
+
+const levelUpSchema = z.object({ amount: z.number().int().optional() });
+
+// Spend coins for online minutes (10,000 coins = 300 minutes; multiples of 5,000).
+walletRouter.post(
+  "/level-up",
+  asyncHandler(async (req, res) => {
+    const { amount } = levelUpSchema.parse(req.body ?? {});
+    const result = await prisma.$transaction((tx) => spendCoinsForProgress(tx, req.userId!, amount));
+    res.json(result);
   })
 );

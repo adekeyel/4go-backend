@@ -111,9 +111,10 @@ export function initSockets(httpServer: HttpServer) {
         });
 
         if (!hasCallPermission(payload.callType, calleeProfile?.rank)) {
-          await prisma.callLogs
+          const declined = await prisma.callLogs
             .update({ where: { id: payload.callId }, data: { status: "declined", duration_seconds: 0 } })
             .catch(() => undefined);
+          if (declined) emitToRoom(payload.roomId, "call:log", declined);
           s.emit("call:signal", {
             callId: payload.callId,
             from: payload.calleeId,

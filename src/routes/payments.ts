@@ -139,10 +139,14 @@ async function buyCoins(userId: string, amount: number, paymentRef: string) {
   if (!ref) throw new ApiError(400, "Verified payment reference is required");
 
   await prisma.$transaction(async (tx) => {
-    const existing = await tx.coinPurchases.findUnique({ where: { payment_ref: ref } });
-    if (existing) return; // already credited (webhook/verify called twice) — idempotent no-op
+    // INSERT ... ON CONFLICT DO NOTHING, like the SQL. Two simultaneous verify calls can no
+    // longer both pass a find-then-create check; the loser inserts nothing and returns.
+    const { count } = await tx.coinPurchases.createMany({
+      data: [{ user_id: userId, amount, payment_ref: ref }],
+      skipDuplicates: true,
+    });
+    if (count === 0) return; // already credited (webhook/verify called twice) — idempotent no-op
 
-    await tx.coinPurchases.create({ data: { user_id: userId, amount, payment_ref: ref } });
     await tx.profiles.update({
       where: { user_id: userId },
       data: { coins: { increment: amount }, purchased_coins: { increment: amount } },

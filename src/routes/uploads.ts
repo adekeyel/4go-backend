@@ -13,9 +13,12 @@ uploadsRouter.post(
   asyncHandler(async (req, res) => {
     if (!req.file) throw new ApiError(400, "No file provided");
     const folder = typeof req.body.folder === "string" ? req.body.folder : "misc";
+    // "auto" lets Cloudinary detect image/video/audio itself — safer than
+    // guessing from the mimetype prefix (audio files aren't "video/*" or
+    // "image/*", so a manual guess here previously mis-typed voice notes).
     const result = await uploadBuffer(req.file.buffer, {
       folder: `forego/${folder}/${req.userId}`,
-      resourceType: req.file.mimetype.startsWith("video") ? "video" : "image",
+      resourceType: "auto",
     });
     res.status(201).json(result);
   })

@@ -570,6 +570,7 @@ model Profiles {
   reward_coins Int @default(0)
   is_premium Boolean @default(false)
   is_verified Boolean @default(false)
+  manual_monetized Boolean @default(false)
   @@index([user_id])
   @@index([username])
 
