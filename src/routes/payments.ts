@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { requireAuth } from "@/middleware/auth";
+import { lockProfile } from "@/lib/coins";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 
 export const paymentsRouter = Router();
@@ -199,18 +200,21 @@ async function activatePremium(userId: string, plan: "monthly" | "yearly", amoun
 }
 
 async function submitVerificationApplication(userId: string, amountNgn: number, paymentRef: string) {
-  const profile = await prisma.profiles.findUnique({ where: { user_id: userId } });
-  if (!profile || !["Professional", "Expert", "Master"].includes(profile.rank)) {
-    throw new ApiError(403, "Verification requires Professional rank or higher");
-  }
-
-  const existing = await prisma.verificationApplications.findFirst({
-    where: { user_id: userId, status: { in: ["pending", "approved"] } },
-    orderBy: { created_at: "desc" },
-  });
-  if (existing) return existing.id; // idempotent: return the existing application
-
+  // One transaction behind a row lock: two simultaneous verify/webhook calls for the same
+  // payment can no longer both pass the "no application yet" check and create two applications.
   return prisma.$transaction(async (tx) => {
+    await lockProfile(tx, userId);
+    const profile = await tx.profiles.findUnique({ where: { user_id: userId }, select: { rank: true } });
+    if (!profile || !["Professional", "Expert", "Master"].includes(profile.rank)) {
+      throw new ApiError(403, "Verification requires Professional rank or higher");
+    }
+
+    const existing = await tx.verificationApplications.findFirst({
+      where: { user_id: userId, status: { in: ["pending", "approved"] } },
+      orderBy: { created_at: "desc" },
+    });
+    if (existing) return existing.id; // idempotent: return the existing application
+
     const app = await tx.verificationApplications.create({
       data: { user_id: userId, amount_ngn: amountNgn, payment_ref: paymentRef, status: "pending" },
     });

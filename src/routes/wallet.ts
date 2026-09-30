@@ -256,6 +256,47 @@ walletRouter.get(
   })
 );
 
+// Gifts you've sent and received (ports the "view own gifts" policy), newest first.
+walletRouter.get(
+  "/gifts",
+  asyncHandler(async (req, res) => {
+    const me = req.userId!;
+    const direction = req.query.direction === "sent" || req.query.direction === "received" ? req.query.direction : "all";
+    const gifts = await prisma.giftTransactions.findMany({
+      where:
+        direction === "sent"
+          ? { sender_id: me }
+          : direction === "received"
+            ? { receiver_id: me }
+            : { OR: [{ sender_id: me }, { receiver_id: me }] },
+      orderBy: { created_at: "desc" },
+      take: 100,
+    });
+    const userIds = [...new Set(gifts.flatMap((g) => [g.sender_id, g.receiver_id]))];
+    const treasureIds = [...new Set(gifts.map((g) => g.treasure_id))];
+    const [profiles, treasures] = await Promise.all([
+      userIds.length
+        ? prisma.profiles.findMany({
+            where: { user_id: { in: userIds } },
+            select: { user_id: true, username: true, display_name: true, avatar_url: true },
+          })
+        : [],
+      treasureIds.length ? prisma.treasures.findMany({ where: { id: { in: treasureIds } } }) : [],
+    ]);
+    const profileMap = new Map(profiles.map((p) => [p.user_id, p]));
+    const treasureMap = new Map(treasures.map((t) => [t.id, t]));
+    res.json(
+      gifts.map((g) => ({
+        ...g,
+        direction: g.sender_id === me ? "sent" : "received",
+        sender: profileMap.get(g.sender_id) ?? null,
+        receiver: profileMap.get(g.receiver_id) ?? null,
+        treasure: treasureMap.get(g.treasure_id) ?? null,
+      }))
+    );
+  })
+);
+
 const giftSchema = z.object({
   receiver_id: z.string().uuid(),
   treasure_id: z.string().uuid(),

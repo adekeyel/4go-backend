@@ -9,7 +9,7 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from "@/utils/j
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { requireAuth } from "@/middleware/auth";
 import { sendPasswordResetEmail, sendVerificationEmail } from "@/lib/email";
-import crypto from "crypto";
+import { generateReferralCode, processReferral } from "@/lib/referrals";
 
 export const authRouter = Router();
 
@@ -54,6 +54,7 @@ const signupSchema = z.object({
   // left null here rather than auto-generating a throwaway one.
   username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/, "Letters, numbers, underscores only").optional(),
   displayName: z.string().min(1).max(60).optional(),
+  referralCode: z.string().max(32).optional(),
 });
 
 authRouter.post(
@@ -81,9 +82,11 @@ authRouter.post(
           user_id: u.id,
           username,
           display_name: body.displayName ?? username ?? email.split("@")[0],
-          referral_code: crypto.randomBytes(4).toString("hex"),
+          referral_code: generateReferralCode(),
         },
       });
+      // Ports process_referral: pays the referrer 500 reward coins when a valid code is supplied.
+      await processReferral(tx, body.referralCode, u.id);
       return u;
     });
 

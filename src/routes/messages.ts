@@ -5,6 +5,8 @@ import { requireAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { assertRoomMember } from "./rooms";
 import { emitToRoom, emitToUser } from "@/sockets";
+import { assertCanSendToRoom } from "@/lib/roomMessages";
+import { pushNewMessage } from "@/lib/push";
 
 export const messagesRouter = Router();
 messagesRouter.use(requireAuth);
@@ -107,7 +109,8 @@ const sendSchema = z.object({
 messagesRouter.post(
   "/room/:roomId",
   asyncHandler(async (req, res) => {
-    await assertRoomMember(req.params.roomId, req.userId!);
+    // Membership + suspended sender + blocked DM + announcements-channel rules (were DB triggers/RLS).
+    await assertCanSendToRoom(req.params.roomId, req.userId!);
     const body = sendSchema.parse(req.body);
     if (body.type === "text" && !body.content?.trim()) throw new ApiError(400, "Message content required");
 
@@ -133,6 +136,7 @@ messagesRouter.post(
         emitToUser(m.user_id, "message:notify", { roomId: message.room_id, messageId: message.id, senderId: message.sender_id, createdAt: message.created_at, type: message.type, content: message.content ? message.content.slice(0, 200) : null });
       }
     }
+    void pushNewMessage(message); // ports notify_push_on_message; never throws, so it can't fail the send
     res.status(201).json(message);
   })
 );
@@ -188,5 +192,59 @@ messagesRouter.post(
     });
     emitToRoom(message.room_id, "reaction:new", reaction);
     res.status(201).json(reaction);
+  })
+);
+
+// Ports record_message_view. The first time another member views a monetized user's message,
+// the sender earns 1 coin if it's an image, a video, or a text of 100+ characters, outside DMs.
+// (The SQL didn't check that the viewer belonged to the room; this does.)
+messagesRouter.post(
+  "/:messageId/view",
+  asyncHandler(async (req, res) => {
+    const messageId = z.string().uuid().parse(req.params.messageId);
+    const userId = req.userId!;
+    const message = await prisma.messages.findUnique({
+      where: { id: messageId },
+      select: { sender_id: true, type: true, content: true, room_id: true },
+    });
+    if (!message) throw new ApiError(404, "Message not found");
+    await assertRoomMember(message.room_id, userId);
+    if (message.sender_id === userId) return res.json({ self_view: true });
+
+    const result = await prisma.$transaction(async (tx) => {
+      const inserted = await tx.messageViews.createMany({
+        data: [{ user_id: userId, message_id: messageId }],
+        skipDuplicates: true,
+      });
+      if (inserted.count === 0) {
+        return { already_viewed: true, view_count: await tx.messageViews.count({ where: { message_id: messageId } }) };
+      }
+
+      const [sender, room] = await Promise.all([
+        tx.profiles.findUnique({ where: { user_id: message.sender_id }, select: { is_monetized: true } }),
+        tx.rooms.findUnique({ where: { id: message.room_id }, select: { type: true } }),
+      ]);
+      const qualifies =
+        message.type === "image" ||
+        message.type === "video" ||
+        (message.type === "text" && (message.content?.length ?? 0) >= 100);
+      if (sender?.is_monetized && room?.type !== "dm" && qualifies) {
+        await tx.profiles.update({
+          where: { user_id: message.sender_id },
+          data: { coins: { increment: 1 }, earned_coins: { increment: 1 } },
+        });
+        await tx.transactions.create({
+          data: {
+            user_id: message.sender_id,
+            amount: 1,
+            source: "earning",
+            description: "View earning on post",
+            reference_id: messageId,
+          },
+        });
+      }
+      return { recorded: true, view_count: await tx.messageViews.count({ where: { message_id: messageId } }) };
+    });
+    res.json(result);
   })
 );

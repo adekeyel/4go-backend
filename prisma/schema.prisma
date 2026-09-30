@@ -433,6 +433,7 @@ model PagePosts {
   media_url String?
   media_type String @default("text")
   views_count Int @default(0)
+  unique_views_count Int @default(0)
   likes_count Int @default(0)
   comments_count Int @default(0)
   saves_count Int @default(0)

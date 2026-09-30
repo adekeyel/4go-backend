@@ -74,14 +74,20 @@ export async function spendCoins(tx: Tx, userId: string, amount: number): Promis
 }
 
 /** Ports `credit_reward_coins`. Reward coins are spendable but not withdrawable. */
-export async function creditRewardCoins(tx: Tx, userId: string, amount: number, description = "Reward") {
+export async function creditRewardCoins(
+  tx: Tx,
+  userId: string,
+  amount: number,
+  description = "Reward",
+  referenceId: string | null = null
+) {
   if (amount <= 0) return;
   await tx.profiles.update({
     where: { user_id: userId },
     data: { coins: { increment: amount }, reward_coins: { increment: amount } },
   });
   await tx.transactions.create({
-    data: { user_id: userId, amount, source: "reward", description },
+    data: { user_id: userId, amount, source: "reward", description, reference_id: referenceId },
   });
 }
 
