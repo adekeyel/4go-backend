@@ -49,14 +49,40 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
   next();
 }
 
-/**
- * Requires the caller to be a super_admin. Mirrors the old
- * `is_super_admin()` Postgres function used throughout the admin RLS
- * policies and RPCs.
- */
-export async function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.userId) return res.status(401).json({ error: "Unauthorized" });
-  const admin = await prisma.superAdmins.findUnique({ where: { user_id: req.userId } });
-  if (!admin) return res.status(403).json({ error: "Admin access required" });
-  next();
+export type AdminRoleName = "super_admin" | "moderator" | "support" | "employee";
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      adminRole?: AdminRoleName;
+    }
+  }
 }
+
+/**
+ * Allow only admins holding one of the listed roles. The old requireSuperAdmin accepted ANY row in
+ * super_admins, so moderators, support agents and employees all passed as super admins; the original
+ * database checked the role each time (is_super_admin, can_moderate, can_support).
+ *   requireRole("super_admin")                 is_super_admin()
+ *   requireRole("super_admin", "moderator")    can_moderate()
+ *   requireRole("super_admin", "support")      can_support()
+ */
+export function requireRole(...roles: AdminRoleName[]) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.userId) return res.status(401).json({ error: "Unauthorized" });
+      const admin = await prisma.superAdmins.findUnique({ where: { user_id: req.userId }, select: { role: true } });
+      if (!admin || !roles.includes(admin.role as AdminRoleName)) {
+        return res.status(403).json({ error: "You don't have permission to do this" });
+      }
+      req.adminRole = admin.role as AdminRoleName;
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+/** Only real super admins (role = super_admin). */
+export const requireSuperAdmin = requireRole("super_admin");

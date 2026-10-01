@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { lockProfile, creditRewardCoins } from "@/lib/coins";
+import { isPremium as userIsPremium } from "@/lib/social";
 import { sendGift, spendCoinsForProgress } from "@/lib/economy";
 
 export const walletRouter = Router();
@@ -19,7 +20,7 @@ walletRouter.get(
       purchased_coins: profile.purchased_coins,
       earned_coins: profile.earned_coins,
       reward_coins: profile.reward_coins,
-      is_premium: profile.is_premium,
+      is_premium: await userIsPremium(req.userId!), // from the subscription dates, so it flips off when a plan runs out
       rank: profile.rank,
     });
   })
@@ -108,11 +109,10 @@ walletRouter.post(
       });
       const isPremium = Boolean(activeSub);
 
-      const monthStart = new Date();
-      monthStart.setDate(1);
-      monthStart.setHours(0, 0, 0, 0);
-      const nextMonthStart = new Date(monthStart);
-      nextMonthStart.setMonth(nextMonthStart.getMonth() + 1);
+      // Calendar month in UTC, like the SQL's date_trunc('month', now()); server time zone must not matter.
+      const nowUtc = new Date();
+      const monthStart = new Date(Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth(), 1));
+      const nextMonthStart = new Date(Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth() + 1, 1));
 
       const activeThisMonth = await tx.withdrawals.findFirst({
         where: {

@@ -153,6 +153,9 @@ authRouter.post(
     // stolen refresh token only works once before the legitimate user's
     // next refresh invalidates it (both fail together, which surfaces the
     // theft rather than allowing silent parallel use).
+    const owner = await prisma.profiles.findUnique({ where: { user_id: session.user_id }, select: { is_suspended: true, suspended_reason: true } });
+    if (owner?.is_suspended) throw new ApiError(403, owner.suspended_reason || "This account has been suspended");
+
     await prisma.refreshSession.update({ where: { id: session.id }, data: { revoked_at: new Date() } });
     const { accessToken, refreshToken } = await issueSession(session.user_id, req.headers["user-agent"], req.ip);
     res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
@@ -194,16 +197,32 @@ authRouter.post(
   })
 );
 
-const forgotPasswordSchema = z.object({ email: z.string().email() });
+const forgotPasswordSchema = z.object({ email: z.string().email(), phone: z.string().max(30).optional() });
+
+// Ports the comparison in verify_reset_phone (spaces and dashes ignored).
+const normalizePhone = (v?: string | null) => (v ?? "").replace(/[\s\-()]/g, "");
 
 authRouter.post(
   "/forgot-password",
   asyncHandler(async (req, res) => {
-    const { email } = forgotPasswordSchema.parse(req.body);
+    const { email, phone } = forgotPasswordSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+
+    // Optional second factor (set REQUIRE_PHONE_FOR_RESET=true): when the account has a phone number on file,
+    // it must be supplied and match. This replaces the verify_reset_phone check, which was a separate public
+    // call that confirmed whether a guessed phone number was right and so let anyone discover a person's number.
+    // Here a mismatch is silent, exactly like an unknown email. Accounts with no phone number on file
+    // aren't locked out; the email link is their only proof.
+    let allowed = true;
+    if (user && env.requirePhoneForReset) {
+      const profile = await prisma.profiles.findUnique({ where: { user_id: user.id }, select: { phone_number: true } });
+      const onFile = normalizePhone(profile?.phone_number);
+      allowed = !onFile || onFile === normalizePhone(phone);
+    }
+
     // Always respond 200 regardless of whether the account exists, to avoid
     // leaking which emails are registered.
-    if (user) {
+    if (user && allowed) {
       await sendPasswordResetEmail(user.email!, user.id).catch((err) =>
         console.error("password reset email failed", err)
       );

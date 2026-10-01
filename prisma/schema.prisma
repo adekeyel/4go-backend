@@ -835,3 +835,26 @@ model Withdrawals {
 
   @@map("withdrawals")
 }
+
+model EmailQueue {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  queue String
+  message_id String @unique
+  to_email String
+  from_email String
+  subject String
+  html String
+  text String?
+  label String
+  unsubscribe_token String?
+  status String @default("pending")
+  attempts Int @default(0)
+  visible_at DateTime @default(now()) @db.Timestamptz(6)
+  error_message String?
+  queued_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([status, queue, visible_at])
+  @@index([label, status])
+
+  @@map("email_queue")
+}

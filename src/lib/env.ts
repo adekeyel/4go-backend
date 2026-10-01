@@ -20,6 +20,10 @@ export const env = {
 
   clientOrigins: (process.env.CLIENT_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   siteUrl: process.env.SITE_URL ?? "http://localhost:5173",
+  // When true, "forgot password" also needs the account's phone number (if it has one on file).
+  requirePhoneForReset: process.env.REQUIRE_PHONE_FOR_RESET === "true",
+  // Public base URL of THIS backend (e.g. https://api.4go.com.ng). Used for the unsubscribe links in emails.
+  apiUrl: (process.env.PUBLIC_API_URL ?? "").replace(/\/+$/, ""),
 
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME ?? "",
@@ -33,6 +37,8 @@ export const env = {
   flutterwave: {
     secretKey: process.env.FLUTTERWAVE_SECRET_KEY ?? "",
     publicKey: process.env.FLUTTERWAVE_PUBLIC_KEY ?? "",
+    // The "Secret hash" you set under Settings > Webhooks in the Flutterwave dashboard. Webhooks are refused without it.
+    webhookHash: process.env.FLUTTERWAVE_WEBHOOK_HASH ?? "",
   },
 
   vapid: {

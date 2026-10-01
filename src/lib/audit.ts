@@ -25,3 +25,9 @@ export async function logAdminAction(
     },
   });
 }
+
+/** Display name for audit entries (the SQL used COALESCE(display_name, username)). */
+export async function userLabel(tx: Tx, userId: string): Promise<string | null> {
+  const p = await tx.profiles.findUnique({ where: { user_id: userId }, select: { display_name: true, username: true } });
+  return p?.display_name ?? p?.username ?? null;
+}

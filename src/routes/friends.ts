@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/middleware/auth";
@@ -118,73 +119,59 @@ friendsRouter.delete(
   })
 );
 
-// --- People you may know: shares a room, isn't already a friend/pending/blocked ---
+// --- People you may know (ports get_people_you_may_know) ---
+// Candidates are people who share a room with you OR are friends of your friends (the earlier version only
+// looked at shared rooms, so someone in no rooms got nothing). Anyone you already have any friend row with
+// (accepted, pending or declined) and anyone blocked either way is left out. Ranked by shared rooms + mutual friends.
 friendsRouter.get(
   "/suggestions",
   asyncHandler(async (req, res) => {
-    const userId = req.userId!;
-    const limit = Math.min(Number(req.query.limit) || 20, 50);
-
-    const myRoomIds = (await prisma.roomMembers.findMany({ where: { user_id: userId }, select: { room_id: true } })).map((r) => r.room_id);
-    if (!myRoomIds.length) return res.json([]);
-
-    const coMembers = await prisma.roomMembers.groupBy({
-      by: ["user_id"],
-      where: { room_id: { in: myRoomIds }, user_id: { not: userId } },
-      _count: { room_id: true },
-    });
-    if (!coMembers.length) return res.json([]);
-
-    const [existingFriends, blocks] = await Promise.all([
-      prisma.friends.findMany({ where: { OR: [{ requester_id: userId }, { addressee_id: userId }] } }),
-      prisma.userBlocks.findMany({ where: { OR: [{ blocker_id: userId }, { blocked_id: userId }] } }),
-    ]);
-    const excludeIds = new Set<string>([
-      ...existingFriends.map((f) => (f.requester_id === userId ? f.addressee_id : f.requester_id)),
-      ...blocks.map((b) => (b.blocker_id === userId ? b.blocked_id : b.blocker_id)),
-    ]);
-
-    const candidates = coMembers
-      .filter((c) => !excludeIds.has(c.user_id))
-      .sort((a, b) => b._count.room_id - a._count.room_id)
-      .slice(0, limit);
-    if (!candidates.length) return res.json([]);
-    const candidateIds = candidates.map((c) => c.user_id);
-
-    const [profiles, myFriendRows, candidateFriendRows] = await Promise.all([
-      prisma.profiles.findMany({
-        where: { user_id: { in: candidateIds } },
-        select: { user_id: true, username: true, display_name: true, avatar_url: true },
-      }),
-      prisma.friends.findMany({ where: { status: "accepted", OR: [{ requester_id: userId }, { addressee_id: userId }] } }),
-      prisma.friends.findMany({
-        where: {
-          status: "accepted",
-          OR: [{ requester_id: { in: candidateIds } }, { addressee_id: { in: candidateIds } }],
-        },
-      }),
-    ]);
-    const myFriendIds = new Set(myFriendRows.map((f) => (f.requester_id === userId ? f.addressee_id : f.requester_id)));
-    const candidateFriendMap = new Map<string, Set<string>>();
-    for (const cid of candidateIds) candidateFriendMap.set(cid, new Set());
-    for (const row of candidateFriendRows) {
-      if (candidateFriendMap.has(row.requester_id)) candidateFriendMap.get(row.requester_id)!.add(row.addressee_id);
-      if (candidateFriendMap.has(row.addressee_id)) candidateFriendMap.get(row.addressee_id)!.add(row.requester_id);
-    }
-
-    const profileMap = new Map(profiles.map((p) => [p.user_id, p]));
-    const result = candidates.map((c) => {
-      const mutualFriends = [...(candidateFriendMap.get(c.user_id) ?? [])].filter((id) => myFriendIds.has(id)).length;
-      return {
-        user_id: c.user_id,
-        display_name: profileMap.get(c.user_id)?.display_name ?? null,
-        username: profileMap.get(c.user_id)?.username ?? null,
-        avatar_url: profileMap.get(c.user_id)?.avatar_url ?? null,
-        shared_rooms: c._count.room_id,
-        mutual_friends: mutualFriends,
-      };
-    });
-    res.json(result);
+    const me = req.userId!;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+    const rows = await prisma.$queryRaw<unknown[]>(Prisma.sql`
+      WITH my_friends AS (
+        SELECT CASE WHEN requester_id = ${me}::uuid THEN addressee_id ELSE requester_id END AS friend_id
+          FROM friends
+         WHERE (requester_id = ${me}::uuid OR addressee_id = ${me}::uuid) AND status = 'accepted'
+      ),
+      related AS (
+        SELECT CASE WHEN requester_id = ${me}::uuid THEN addressee_id ELSE requester_id END AS other_id
+          FROM friends
+         WHERE requester_id = ${me}::uuid OR addressee_id = ${me}::uuid
+      ),
+      room_peers AS (
+        SELECT rm.user_id AS candidate_id, count(DISTINCT rm.room_id) AS shared_rooms
+          FROM room_members rm
+          JOIN room_members mine ON mine.room_id = rm.room_id AND mine.user_id = ${me}::uuid
+         WHERE rm.user_id <> ${me}::uuid
+         GROUP BY rm.user_id
+      ),
+      fof AS (
+        SELECT CASE WHEN f.requester_id = mf.friend_id THEN f.addressee_id ELSE f.requester_id END AS candidate_id,
+               count(DISTINCT mf.friend_id) AS mutual_friends
+          FROM my_friends mf
+          JOIN friends f ON (f.requester_id = mf.friend_id OR f.addressee_id = mf.friend_id) AND f.status = 'accepted'
+         WHERE CASE WHEN f.requester_id = mf.friend_id THEN f.addressee_id ELSE f.requester_id END <> ${me}::uuid
+         GROUP BY 1
+      ),
+      candidates AS (
+        SELECT COALESCE(rp.candidate_id, fof.candidate_id) AS candidate_id,
+               COALESCE(rp.shared_rooms, 0) AS shared_rooms,
+               COALESCE(fof.mutual_friends, 0) AS mutual_friends
+          FROM room_peers rp FULL OUTER JOIN fof ON rp.candidate_id = fof.candidate_id
+      )
+      SELECT p.user_id, p.display_name, p.username, p.avatar_url,
+             c.shared_rooms::int AS shared_rooms, c.mutual_friends::int AS mutual_friends
+        FROM candidates c
+        JOIN profiles p ON p.user_id = c.candidate_id
+       WHERE c.candidate_id NOT IN (SELECT other_id FROM related)
+         AND NOT EXISTS (
+           SELECT 1 FROM user_blocks ub
+            WHERE (ub.blocker_id = ${me}::uuid AND ub.blocked_id = c.candidate_id)
+               OR (ub.blocker_id = c.candidate_id AND ub.blocked_id = ${me}::uuid))
+       ORDER BY (c.shared_rooms + c.mutual_friends) DESC, p.display_name
+       LIMIT ${limit}`);
+    res.json(rows);
   })
 );
 

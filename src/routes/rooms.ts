@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, optionalAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { emitToRoom } from "@/sockets";
+import { createJoinRequest, reviewJoinRequest } from "@/lib/joinRequests";
 
 export const roomsRouter = Router();
 
@@ -393,33 +394,8 @@ roomsRouter.post(
     const room = await prisma.rooms.findUnique({ where: { id: req.params.roomId } });
     if (!room) throw new ApiError(404, "Room not found");
 
-    const existing = await prisma.roomJoinRequests.findUnique({
-      where: { room_id_user_id: { room_id: room.id, user_id: req.userId! } },
-    });
-    if (existing?.status === "pending") throw new ApiError(409, "Join request already sent");
-    if (existing?.status === "approved") throw new ApiError(409, "You're already a member");
-
-    const fee = room.join_fee ?? 0;
-
-    // Fee (if any) is deducted atomically with creating the request, inside
-    // one transaction — no separate client-side deduct/refund dance, so
-    // there's no window for a failed request to leave someone short. Uses
-    // upsert since (room_id, user_id) is unique — a prior rejected request
-    // just gets reopened rather than colliding.
-    const request = await prisma.$transaction(async (tx) => {
-      if (fee > 0) {
-        const updated = await tx.profiles.updateMany({
-          where: { user_id: req.userId!, coins: { gte: fee } },
-          data: { coins: { decrement: fee } },
-        });
-        if (updated.count === 0) throw new ApiError(400, `Not enough coins. You need ${fee} coins to request.`);
-      }
-      return tx.roomJoinRequests.upsert({
-        where: { room_id_user_id: { room_id: room.id, user_id: req.userId! } },
-        create: { room_id: room.id, user_id: req.userId!, fee_paid: fee, answers: answers ?? [], status: "pending" },
-        update: { fee_paid: fee, answers: answers ?? [], status: "pending" },
-      });
-    });
+    // Duplicate / already-a-member checks happen inside createJoinRequest, in the same transaction as the fee.
+    const request = await createJoinRequest(req.userId!, room, answers);
     res.status(201).json(request);
   })
 );
@@ -456,22 +432,7 @@ roomsRouter.patch(
     const request = await prisma.roomJoinRequests.findUnique({ where: { id: req.params.requestId } });
     if (!request || request.room_id !== req.params.roomId) throw new ApiError(404, "Request not found");
 
-    if (decision === "approve") {
-      await prisma.$transaction([
-        prisma.roomJoinRequests.update({ where: { id: request.id }, data: { status: "approved" } }),
-        prisma.roomMembers.create({ data: { room_id: request.room_id, user_id: request.user_id, role: "member" } }),
-      ]);
-    } else {
-      await prisma.$transaction(async (tx) => {
-        await tx.roomJoinRequests.update({ where: { id: request.id }, data: { status: "rejected" } });
-        if (request.fee_paid > 0) {
-          await tx.profiles.updateMany({
-            where: { user_id: request.user_id },
-            data: { coins: { increment: request.fee_paid } },
-          });
-        }
-      });
-    }
+    await reviewJoinRequest(request, decision);
     res.json({ status: decision === "approve" ? "approved" : "rejected" });
   })
 );

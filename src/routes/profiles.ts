@@ -61,14 +61,15 @@ profilesRouter.patch(
   })
 );
 
-// Whether the current user is a super admin (replaces the has_admin_access RPC),
+// Whether the current user is staff of any kind (replaces the has_admin_access RPC),
 // used to decide whether to show the admin entry point.
 profilesRouter.get(
   "/me/admin-access",
   requireAuth,
   asyncHandler(async (req, res) => {
     const admin = await prisma.superAdmins.findUnique({ where: { user_id: req.userId! } });
-    res.json({ isAdmin: !!admin });
+    // `role` lets the app show the right admin screens (ports get_admin_role).
+    res.json({ isAdmin: !!admin, role: admin?.role ?? null });
   })
 );
 
