@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, optionalAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { addOnlineMinutes } from "@/lib/rank";
+import { setPresence } from "@/lib/presence";
+import { emitToUser } from "@/sockets";
 
 export const profilesRouter = Router();
 
@@ -91,23 +93,15 @@ profilesRouter.post(
     const { online, minutesDelta } = presenceSchema.parse(req.body);
     const now = new Date();
 
-    await prisma.profiles.update({
-      where: { user_id: req.userId! },
-      data: {
-        is_online: online,
-        last_seen: now,
-      },
-    });
+    // Detects the offline-to-online change atomically (and alerts the employee who invited this user).
+    const notice = await setPresence(req.userId!, online, now);
+    if (notice) emitToUser(notice.employeeId, "employee:notification", notice.notification);
 
     // Credit minutes and recompute rank / monetized / verified (ports increment_online_minutes).
     if (minutesDelta) await addOnlineMinutes(req.userId!, minutesDelta);
 
-    prisma.profiles
-      .updateMany({
-        where: { is_online: true, last_seen: { lt: new Date(now.getTime() - 3 * 60 * 1000) } },
-        data: { is_online: false },
-      })
-      .catch((err) => console.warn("[presence] stale sweep failed", err));
+    // Stale presence (no heartbeat for 3 minutes) is cleared by the background job in lib/maintenance.ts
+    // once a minute, instead of every heartbeat from every user running a table-wide update.
 
     res.status(204).send();
   })

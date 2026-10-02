@@ -19,9 +19,22 @@ export async function syncPremiumFlags() {
      WHERE p.user_id = s.user_id AND p.is_premium IS DISTINCT FROM s.active`;
 }
 
+/** Ports cleanup_stale_presence: anyone online with no heartbeat for 3 minutes is marked offline. */
+export async function cleanupStalePresence() {
+  return prisma.$executeRaw`
+    UPDATE profiles SET is_online = false
+     WHERE is_online = true AND (last_seen IS NULL OR last_seen < now() - interval '3 minutes')`;
+}
+
 /** Start background upkeep. Call once at server start. */
 export function startMaintenance() {
   const run = () => syncPremiumFlags().catch((e) => console.error("[maintenance] premium sync failed:", (e as Error).message));
   run();
   setInterval(run, 10 * 60_000).unref();
+
+  // Runs every minute. (The old cron export couldn't be read, but the only schedule in the Supabase files
+  // was the email dispatcher, which now lives in lib/emailQueue.ts; presence was swept opportunistically.)
+  const sweep = () => cleanupStalePresence().catch((e) => console.error("[maintenance] presence sweep failed:", (e as Error).message));
+  sweep();
+  setInterval(sweep, 60_000).unref();
 }

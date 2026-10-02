@@ -4,6 +4,7 @@ import { verifyAccessToken } from "@/utils/jwt";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { hasCallPermission, CallType } from "@/lib/callPermissions";
+import { setPresence } from "@/lib/presence";
 
 interface AuthedSocket extends Socket {
   data: { userId: string };
@@ -28,10 +29,12 @@ export function emitToUser(userId: string, event: string, payload: unknown) {
 const onlineCounts = new Map<string, number>(); // userId -> number of open sockets
 
 async function setOnline(userId: string, online: boolean) {
-  await prisma.profiles
-    .updateMany({ where: { user_id: userId }, data: { is_online: online, last_seen: new Date() } })
-    .catch((err) => console.error("failed to update presence", err));
+  const notice = await setPresence(userId, online).catch((err) => {
+    console.error("failed to update presence", err);
+    return null;
+  });
   getIo().emit("presence:update", { userId, online });
+  if (notice) emitToUser(notice.employeeId, "employee:notification", notice.notification); // was Supabase Realtime
 }
 
 export function initSockets(httpServer: HttpServer) {
