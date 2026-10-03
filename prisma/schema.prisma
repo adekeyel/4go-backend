@@ -67,6 +67,36 @@ model AdBanners {
   @@map("ad_banners")
 }
 
+// Video ads that play inside user-uploaded videos (pre-roll / mid-roll / post-roll).
+// One row = one ad with one slot. To run the same creative at two points in a video, create two rows.
+model VideoAds {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  advertiser_id String? @db.Uuid
+  title String
+  video_url String
+  thumbnail_url String?
+  duration_seconds Int?
+  target_url String?
+  status String @default("active")
+  placement String @default("pre_roll")
+  mid_roll_at_seconds Int?
+  min_video_seconds Int @default(30)
+  target_page_ids String[] @default([]) @db.Uuid
+  skippable Boolean @default(true)
+  skip_after_seconds Int @default(5)
+  starts_at DateTime? @db.Timestamptz(6)
+  ends_at DateTime? @db.Timestamptz(6)
+  impressions Int @default(0)
+  completions Int @default(0)
+  clicks Int @default(0)
+  created_by String? @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@index([status, placement])
+
+  @@map("video_ads")
+}
+
 model AdminAuditLogs {
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   actor_id String? @db.Uuid
