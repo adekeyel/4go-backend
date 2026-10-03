@@ -19,6 +19,7 @@ Migrations added, in order:
 1. `20260929000000_add_manual_monetized`: `profiles.manual_monetized`
 2. `20260929000100_add_page_posts_unique_views_count`: `page_posts.unique_views_count`
 3. `20260929000200_add_email_queue`: the `email_queue` table
+4. `20260930000000_seed_app_settings`: default rows for `app_settings` (safe to re-run)
 
 ## 3. Check it compiles (I could not run the TypeScript compiler against a generated Prisma client)
 ```
@@ -38,6 +39,13 @@ Settings > Webhooks: URL `https://<your-api>/api/webhooks/flutterwave`, secret h
 - Make one real small payment (coins) and one real payout in test mode and check both settle.
 - Send one test push and one test email (`POST /api/broadcast/email` to yourself is the quickest check).
 - Point the service worker's `pushsubscriptionchange` handler at `POST /api/push/rotate`.
+
+## 6b. Added in the frontend-gaps step (B1 to B10)
+- Call pushes are now sent by the server from the real call row. Remove the three `send-push` calls in `CallContext.tsx`.
+- Sockets: joining a room now requires membership, and `call:invite` is verified against `POST /api/calls`. Clients that emit `call:invite` must create the call row first (they already do) and no longer need to send `callerName`.
+- Hand-verified users now stay verified (the old recompute removed the badge whenever a subscription changed).
+- Settings in `app_settings` are stored and editable but **nothing enforces them yet** (signups_enabled, maintenance_mode, ...).
+- Message delete is now sender or room admin only (it was any member). Moderators use `DELETE /api/admin/messages/:id`.
 
 ## 7. Frontend
 `frontend.zip` has `API-changes.md`: every old Supabase call mapped to its new endpoint, plus the socket events.
@@ -69,6 +77,11 @@ These run inside the server process. If you run several instances they are safe 
 ## Files in this package
 
 ### New
+- src/lib/callPush.ts
+- src/lib/cleanup.ts
+- src/lib/realtime.ts
+- src/routes/settings.ts
+- prisma/migrations/20260930000000_seed_app_settings/migration.sql
 - prisma/backfill_page_post_unique_views.sql
 - prisma/migrations/20260929000000_add_manual_monetized/migration.sql
 - prisma/migrations/20260929000100_add_page_posts_unique_views_count/migration.sql
@@ -113,6 +126,10 @@ These run inside the server process. If you run several instances they are safe 
 - src/routes/verification.ts
 - src/routes/webhooks.ts
 ### Replaced (diff these against your copies first if you've edited them since uploading)
+- src/routes/calls.ts
+- src/routes/broadcast.ts
+- src/routes/contacts.ts
+- src/lib/profileFlags.ts
 - prisma/schema.prisma
 - src/index.ts
 - src/lib/email.ts

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { getIo, emitToUser } from "@/sockets";
 import { requireAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { areFriends } from "@/lib/social";
@@ -107,6 +108,7 @@ statusesRouter.post(
         text_content: body.text_content ?? null,
       },
     });
+    getIo().emit("status:changed", { userId: req.userId!, statusId: status.id, action: "created" });
     res.status(201).json(status);
   })
 );
@@ -121,6 +123,7 @@ statusesRouter.delete(
       await tx.statusViews.deleteMany({ where: { status_id: id } });
       await tx.statusReactions.deleteMany({ where: { status_id: id } });
     });
+    getIo().emit("status:changed", { userId: req.userId!, statusId: id, action: "deleted" });
     res.status(204).send();
   })
 );
@@ -135,6 +138,11 @@ statusesRouter.post(
       data: [{ status_id: status.id, viewer_id: req.userId! }],
       skipDuplicates: true,
     });
+    if (inserted.count > 0) {
+      const ev = { statusId: status.id, viewerId: req.userId! };
+      getIo().to(`status:${status.id}`).emit("status:view", ev);
+      emitToUser(status.user_id, "status:view", ev);
+    }
     res.json({ recorded: inserted.count > 0 });
   })
 );
@@ -182,6 +190,9 @@ statusesRouter.put(
       create: { status_id: status.id, user_id: req.userId!, emoji },
       update: { emoji },
     });
+    const ev = { statusId: status.id, userId: req.userId!, emoji };
+    getIo().to(`status:${status.id}`).emit("status:reaction", ev);
+    emitToUser(status.user_id, "status:reaction", ev);
     res.json(reaction);
   })
 );
@@ -189,9 +200,14 @@ statusesRouter.put(
 statusesRouter.delete(
   "/:statusId/reaction",
   asyncHandler(async (req, res) => {
-    await prisma.statusReactions.deleteMany({
-      where: { status_id: uuid.parse(req.params.statusId), user_id: req.userId! },
-    });
+    const statusId = uuid.parse(req.params.statusId);
+    const { count } = await prisma.statusReactions.deleteMany({ where: { status_id: statusId, user_id: req.userId! } });
+    if (count > 0) {
+      const author = await prisma.statuses.findUnique({ where: { id: statusId }, select: { user_id: true } });
+      const ev = { statusId, userId: req.userId!, emoji: null };
+      getIo().to(`status:${statusId}`).emit("status:reaction", ev);
+      if (author) emitToUser(author.user_id, "status:reaction", ev);
+    }
     res.status(204).send();
   })
 );

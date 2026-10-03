@@ -209,7 +209,11 @@ walletRouter.get(
     });
     const nextAt = last ? new Date(last.claimed_at.getTime() + CLAIM_COOLDOWN_HOURS * 3600_000) : null;
     const canClaim = claimsToday < MAX_CLAIMS_PER_DAY && (!nextAt || nextAt <= new Date());
-    res.json({ canClaim, claimsToday, maxPerDay: MAX_CLAIMS_PER_DAY, nextClaimAt: nextAt });
+    res.json({
+      canClaim, claimsToday, maxPerDay: MAX_CLAIMS_PER_DAY, nextClaimAt: nextAt,
+      // same values under the names the old claim RPC used
+      can_claim: canClaim, claims_today: claimsToday, max_per_day: MAX_CLAIMS_PER_DAY, next_claim_at: nextAt,
+    });
   })
 );
 
@@ -218,7 +222,7 @@ walletRouter.post(
   asyncHandler(async (req, res) => {
     // Checks and the credit share one transaction behind a row lock, so firing
     // several claim requests in parallel can't bypass the cooldown or daily cap.
-    await prisma.$transaction(async (tx) => {
+    const claimId = await prisma.$transaction(async (tx) => {
       await lockProfile(tx, req.userId!);
 
       const claimsToday = await tx.dailyClaims.count({
@@ -239,11 +243,41 @@ walletRouter.post(
         }
       }
 
-      await tx.dailyClaims.create({ data: { user_id: req.userId! } });
-      await creditRewardCoins(tx, req.userId!, CLAIM_REWARD_COINS, "Daily activity reward");
+      const claim = await tx.dailyClaims.create({ data: { user_id: req.userId! } });
+      await creditRewardCoins(tx, req.userId!, CLAIM_REWARD_COINS, "Daily activity reward", claim.id);
+      return claim.id;
     });
 
-    res.json({ coinsAwarded: CLAIM_REWARD_COINS });
+    // coins_awarded is the name the old RPC result used, so existing UI code keeps working.
+    res.json({ coinsAwarded: CLAIM_REWARD_COINS, coins_awarded: CLAIM_REWARD_COINS, claimId });
+  })
+);
+
+// The two optional "visit our sponsor" boosts after a claim (+100 each). The page used to credit these itself
+// through a client-callable credit function, so anyone could mint coins. Now the server decides:
+//   stage 1 is allowed once per claim, stage 2 only after stage 1, both only on your latest claim and
+//   only within 15 minutes of it. A repeated request is a no-op that reports alreadyGranted.
+const BOOST_COINS = 100;
+const BOOST_WINDOW_MS = 15 * 60_000;
+walletRouter.post(
+  "/daily-claim/boost",
+  asyncHandler(async (req, res) => {
+    const { stage } = z.object({ stage: z.union([z.literal(1), z.literal(2)]) }).parse(req.body);
+    const result = await prisma.$transaction(async (tx) => {
+      await lockProfile(tx, req.userId!);
+      const claim = await tx.dailyClaims.findFirst({ where: { user_id: req.userId! }, orderBy: { claimed_at: "desc" } });
+      if (!claim || Date.now() - claim.claimed_at.getTime() > BOOST_WINDOW_MS) throw new ApiError(409, "No recent claim to boost");
+
+      const label = (n: number) => `Sponsor boost reward (stage ${n})`;
+      const done = async (n: number) =>
+        (await tx.transactions.count({ where: { user_id: req.userId!, reference_id: claim.id, description: label(n) } })) > 0;
+
+      if (await done(stage)) return { alreadyGranted: true, coinsAwarded: 0 };
+      if (stage === 2 && !(await done(1))) throw new ApiError(409, "Complete the first boost before the final one");
+      await creditRewardCoins(tx, req.userId!, BOOST_COINS, label(stage), claim.id);
+      return { alreadyGranted: false, coinsAwarded: BOOST_COINS };
+    });
+    res.json(result);
   })
 );
 

@@ -38,6 +38,7 @@ import { adminRouter } from "@/routes/admin";
 import { callsRouter } from "@/routes/calls";
 import { moderationRouter } from "@/routes/moderation";
 import { mentionsRouter } from "@/routes/mentions";
+import { settingsRouter } from "@/routes/settings";
 
 const app = express();
 
@@ -75,6 +76,7 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/payouts", payoutsRouter);
 app.use("/api/webhooks", webhooksRouter);
 app.use("/api/ads", adsRouter);
+app.use("/api/settings", settingsRouter);
 app.use("/api/employees", employeesRouter);
 app.use("/api/uploads", uploadsRouter);
 app.use("/api/wallet", walletRouter);

@@ -6,6 +6,7 @@ import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { assertRoomMember } from "./rooms";
 import { hasCallPermission } from "@/lib/callPermissions";
 import { emitToRoom, emitToUser } from "@/sockets";
+import { pushCallEnded } from "@/lib/callPush";
 
 export const callsRouter = Router();
 callsRouter.use(requireAuth);
@@ -62,6 +63,9 @@ callsRouter.patch(
     });
     emitToRoom(updated.room_id, "call:log", updated);
     emitToUser(updated.callee_id, "call:updated", updated);
+    // Whatever the outcome, the callee's phone should stop ringing / drop the notification. Only when the status
+    // actually changed, so retries don't push twice.
+    if (call.status !== updated.status) void pushCallEnded(updated);
     res.json(updated);
   })
 );

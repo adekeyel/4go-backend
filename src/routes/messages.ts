@@ -7,6 +7,7 @@ import { assertRoomMember } from "./rooms";
 import { emitToRoom, emitToUser } from "@/sockets";
 import { assertCanSendToRoom } from "@/lib/roomMessages";
 import { pushNewMessage } from "@/lib/push";
+import { deleteMessagesCascade } from "@/lib/cleanup";
 
 export const messagesRouter = Router();
 messagesRouter.use(requireAuth);
@@ -98,6 +99,44 @@ messagesRouter.get(
   })
 );
 
+const idList = (v: unknown) =>
+  typeof v === "string" ? [...new Set(v.split(",").map((x) => x.trim()).filter((x) => /^[0-9a-f-]{36}$/i.test(x)))].slice(0, 200) : [];
+
+// Reactions for a batch of messages (?ids=a,b,c, up to 200), so a chat screen loads them in one call.
+// Returns the raw rows; group by message_id on the client.
+messagesRouter.get(
+  "/room/:roomId/reactions",
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    const ids = idList(req.query.ids);
+    if (!ids.length) return res.json([]);
+    const msgs = await prisma.messages.findMany({ where: { id: { in: ids }, room_id: req.params.roomId }, select: { id: true } });
+    res.json(
+      await prisma.messageReactions.findMany({ where: { message_id: { in: msgs.map((m) => m.id) } }, orderBy: { created_at: "asc" } })
+    );
+  })
+);
+
+// How many people have viewed each of YOUR messages in this room (?ids=a,b,c). Other people's messages are left out.
+messagesRouter.get(
+  "/room/:roomId/views",
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    const ids = idList(req.query.ids);
+    if (!ids.length) return res.json({});
+    const mine = await prisma.messages.findMany({
+      where: { id: { in: ids }, room_id: req.params.roomId, sender_id: req.userId! },
+      select: { id: true },
+    });
+    const groups = mine.length
+      ? await prisma.messageViews.groupBy({ by: ["message_id"], where: { message_id: { in: mine.map((m) => m.id) } }, _count: { message_id: true } })
+      : [];
+    const counts: Record<string, number> = Object.fromEntries(mine.map((m) => [m.id, 0]));
+    for (const g of groups) counts[g.message_id] = g._count.message_id;
+    res.json(counts);
+  })
+);
+
 const sendSchema = z.object({
   type: z.enum(["text", "image", "video", "audio", "file"]).default("text"),
   content: z.string().max(4000).optional(),
@@ -158,16 +197,20 @@ messagesRouter.patch(
   })
 );
 
+// Delete a message: the sender, or an admin of the room. (Before, ANY member could delete ANY message.)
+// Reactions, views, pins and mention notices go with it; moderators use DELETE /api/admin/messages/:id.
 messagesRouter.delete(
   "/:messageId",
   asyncHandler(async (req, res) => {
-    const message = await prisma.messages.findUnique({ where: { id: req.params.messageId } });
+    const id = z.string().uuid().parse(req.params.messageId);
+    const message = await prisma.messages.findUnique({ where: { id } });
     if (!message) return res.status(204).send();
     if (message.sender_id !== req.userId!) {
-      await assertRoomMember(message.room_id, req.userId!); // allow room admins to moderate
+      const member = await assertRoomMember(message.room_id, req.userId!);
+      if (member.role !== "admin") throw new ApiError(403, "Only the sender or a room admin can delete this message");
     }
-    await prisma.messages.delete({ where: { id: message.id } });
-    emitToRoom(message.room_id, "message:delete", { id: message.id });
+    await prisma.$transaction((tx) => deleteMessagesCascade(tx, [id]));
+    emitToRoom(message.room_id, "message:delete", { id });
     res.status(204).send();
   })
 );
@@ -192,6 +235,33 @@ messagesRouter.post(
     });
     emitToRoom(message.room_id, "reaction:new", reaction);
     res.status(201).json(reaction);
+  })
+);
+
+// Remove your own reaction. The emoji goes in the URL (URL-encoded).
+messagesRouter.delete(
+  "/:messageId/reactions/:emoji",
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.messageId);
+    const emoji = z.string().min(1).max(16).parse(req.params.emoji);
+    const message = await prisma.messages.findUnique({ where: { id }, select: { room_id: true } });
+    if (!message) return res.status(204).send();
+    await assertRoomMember(message.room_id, req.userId!);
+    const { count } = await prisma.messageReactions.deleteMany({ where: { message_id: id, user_id: req.userId!, emoji } });
+    if (count > 0) emitToRoom(message.room_id, "reaction:removed", { message_id: id, user_id: req.userId!, emoji });
+    res.status(204).send();
+  })
+);
+
+// Everyone's reactions on one message.
+messagesRouter.get(
+  "/:messageId/reactions",
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.messageId);
+    const message = await prisma.messages.findUnique({ where: { id }, select: { room_id: true } });
+    if (!message) throw new ApiError(404, "Message not found");
+    await assertRoomMember(message.room_id, req.userId!);
+    res.json(await prisma.messageReactions.findMany({ where: { message_id: id }, orderBy: { created_at: "asc" } }));
   })
 );
 

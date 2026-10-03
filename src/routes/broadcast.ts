@@ -2,6 +2,8 @@ import { Router } from "express";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { getIo } from "@/sockets";
+import { sendPush } from "@/lib/push";
 import { requireAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { isSuperAdmin } from "@/lib/roles";
@@ -69,6 +71,7 @@ broadcastRouter.post(
         failure_count: 0,
       },
     });
+    getIo().emit("notification:new", { title: body.title, message: body.message, priority: body.priority });
     await prisma.$transaction((tx) => logAdminAction(tx, adminId, "broadcast_announce", null, body.title, { recipients: profiles.length }));
     res.json({ ok: true, recipients: profiles.length });
   })
@@ -183,7 +186,62 @@ broadcastRouter.get(
 // Recent broadcasts, newest first.
 broadcastRouter.get(
   "/deliveries",
-  asyncHandler(async (_req, res) => {
-    res.json(await prisma.broadcastDeliveries.findMany({ orderBy: { created_at: "desc" }, take: 50 }));
+  asyncHandler(async (req, res) => {
+    const since = typeof req.query.since === "string" && !isNaN(Date.parse(req.query.since)) ? new Date(req.query.since) : undefined;
+    res.json(await prisma.broadcastDeliveries.findMany({ where: since ? { created_at: { gte: since } } : {}, orderBy: { created_at: "desc" }, take: 50 }));
+  })
+);
+
+// Push notification to every device (Broadcast screen, "push" channel). Optional ?url opens a page when tapped.
+// Sent in the background in bounded batches; the response says how many people will be tried.
+broadcastRouter.post(
+  "/push",
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({ title: z.string().trim().min(1).max(100), body: z.string().trim().min(1).max(500), url: z.string().max(300).optional() })
+      .parse(req.body);
+    const adminId = req.userId!;
+    const duplicate = await prisma.broadcastDeliveries.findFirst({
+      where: { channel: "push", title: body.title, body: body.body, created_at: { gt: new Date(Date.now() - 2 * 60_000) } },
+      select: { id: true },
+    });
+    if (duplicate) throw new ApiError(409, "This exact push was already sent in the last 2 minutes");
+
+    const users = (await prisma.pushSubscriptions.findMany({ distinct: ["user_id"], select: { user_id: true } })).map((u) => u.user_id);
+    const delivery = await prisma.broadcastDeliveries.create({
+      data: { channel: "push", title: body.title, body: body.body, sent_by: adminId, target_count: users.length, success_count: 0, failure_count: 0, error_sample: "Sending…" },
+    });
+    void (async () => {
+      let sent = 0;
+      let total = 0;
+      for (let i = 0; i < users.length; i += 500) {
+        const r = await sendPush(users.slice(i, i + 500), { title: body.title, body: body.body, data: body.url ? { navigateTo: body.url } : {} });
+        sent += r.sent;
+        total += r.total;
+      }
+      await prisma.broadcastDeliveries
+        .update({ where: { id: delivery.id }, data: { success_count: sent, failure_count: total - sent, error_sample: null } })
+        .catch(() => {});
+    })();
+    await prisma.$transaction((tx) => logAdminAction(tx, adminId, "broadcast_push", null, body.title, { users: users.length }));
+    res.json({ ok: true, recipients: users.length });
+  })
+);
+
+// The send log (one row per email attempt) for the Delivery screen. ?since=ISO, ?status=, ?q=<address contains>, ?limit
+broadcastRouter.get(
+  "/email/log",
+  asyncHandler(async (req, res) => {
+    const since = typeof req.query.since === "string" && !isNaN(Date.parse(req.query.since)) ? new Date(req.query.since) : new Date(Date.now() - 7 * 86_400_000);
+    const status = typeof req.query.status === "string" && req.query.status ? req.query.status : undefined;
+    const q = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : undefined;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
+    res.json(
+      await prisma.emailSendLog.findMany({
+        where: { created_at: { gte: since }, ...(status ? { status } : {}), ...(q ? { recipient_email: { contains: q, mode: "insensitive" } } : {}) },
+        orderBy: { created_at: "desc" },
+        take: limit,
+      })
+    );
   })
 );

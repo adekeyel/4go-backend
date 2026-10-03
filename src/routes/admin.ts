@@ -4,10 +4,14 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireRole } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
-import { emitToUser } from "@/sockets";
+import { emitToUser, emitToRoom } from "@/sockets";
 import { refundEarnedCoins } from "@/lib/coins";
 import { getAdminRole } from "@/lib/roles";
 import { logAdminAction, userLabel } from "@/lib/audit";
+import { recomputeProfileFlags } from "@/lib/profileFlags";
+import { pushProfileFlags } from "@/lib/realtime";
+import { sendPush } from "@/lib/push";
+import { deleteMessagesCascade, deleteRoomCascade } from "@/lib/cleanup";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth);
@@ -162,6 +166,7 @@ adminRouter.post(
       if (count === 0) throw new ApiError(404, "User not found");
       await logAdminAction(tx, req.userId!, "user_unsuspended", userId, await userLabel(tx, userId));
     });
+    await pushProfileFlags(userId);
     res.status(204).send();
   })
 );
@@ -181,6 +186,7 @@ adminRouter.post(
       if (count === 0) throw new ApiError(404, "User not found");
       await logAdminAction(tx, req.userId!, value ? "user_monetized" : "user_unmonetized", userId, await userLabel(tx, userId));
     });
+    await pushProfileFlags(userId);
     res.json({ is_monetized: value });
   })
 );
@@ -267,7 +273,7 @@ adminRouter.get(
   })
 );
 
-const resolveReportSchema = z.object({ status: z.enum(["resolved", "dismissed"]) });
+const resolveReportSchema = z.object({ status: z.enum(["resolved", "dismissed", "actioned"]) });
 
 adminRouter.patch(
   "/reports/:id",
@@ -612,5 +618,190 @@ adminRouter.get(
         (SELECT count(*) FROM withdrawals WHERE status = 'pending')::int AS pending_withdrawals,
         (SELECT count(*) FROM withdrawals WHERE naira_amount >= 50000 AND status = 'pending')::int AS large_withdrawals`);
     res.json(row);
+  })
+);
+
+
+// ------------------------------------------------------------------------------------------ grants (premium / verified)
+
+// Hand out or take away Premium. Goes through the subscriptions table so the 10-minute premium sync and
+// every other reader agree (the old admin screen flipped profiles.is_premium directly and the sync undid it).
+adminRouter.post(
+  "/users/:userId/premium",
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const { enabled, days } = z.object({ enabled: z.boolean(), days: z.number().int().min(1).max(3650).default(30) }).parse(req.body);
+    const userId = uuid.parse(req.params.userId);
+    await prisma.$transaction(async (tx) => {
+      if (!(await tx.profiles.findUnique({ where: { user_id: userId }, select: { user_id: true } }))) throw new ApiError(404, "User not found");
+      await tx.subscriptions.updateMany({
+        where: { user_id: userId, status: "active" },
+        data: { status: enabled ? "expired" : "cancelled", updated_at: new Date() },
+      });
+      if (enabled) {
+        await tx.subscriptions.create({
+          data: {
+            user_id: userId,
+            plan: "admin_grant",
+            status: "active",
+            amount_ngn: 0,
+            payment_ref: `admin-${req.userId}-${Date.now()}`,
+            current_period_end: new Date(Date.now() + days * 86_400_000),
+          },
+        });
+      }
+      await recomputeProfileFlags(tx, userId);
+      await logAdminAction(tx, req.userId!, enabled ? "premium_granted" : "premium_revoked", userId, await userLabel(tx, userId), enabled ? { days } : {});
+    });
+    await pushProfileFlags(userId);
+    const p = await prisma.profiles.findUnique({ where: { user_id: userId }, select: { is_premium: true } });
+    res.json({ is_premium: p?.is_premium ?? false });
+  })
+);
+
+adminRouter.post(
+  "/users/:userId/verified",
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+    const userId = uuid.parse(req.params.userId);
+    await prisma.$transaction(async (tx) => {
+      const p = await tx.profiles.findUnique({ where: { user_id: userId }, select: { rank: true } });
+      if (!p) throw new ApiError(404, "User not found");
+      if (!enabled && p.rank === "King") throw new ApiError(409, "King rank is verified automatically and can't be removed");
+      await tx.profiles.update({ where: { user_id: userId }, data: { is_verified: enabled } });
+      // Keep approved applications in step so a later recompute doesn't bring the badge back.
+      if (!enabled) await tx.verificationApplications.updateMany({ where: { user_id: userId, status: "approved" }, data: { is_verified: false, updated_at: new Date() } });
+      await logAdminAction(tx, req.userId!, enabled ? "verified_granted" : "verified_revoked", userId, await userLabel(tx, userId));
+    });
+    await pushProfileFlags(userId);
+    res.json({ is_verified: enabled });
+  })
+);
+
+// Send a push notification to one person (from the Users screen).
+adminRouter.post(
+  "/users/:userId/notify",
+  modOrSuper,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({ title: z.string().trim().min(1).max(100), body: z.string().trim().min(1).max(500), url: z.string().max(300).optional() })
+      .parse(req.body);
+    const userId = uuid.parse(req.params.userId);
+    const result = await sendPush([userId], { title: body.title, body: body.body, data: body.url ? { navigateTo: body.url } : {} });
+    await prisma.$transaction(async (tx) => logAdminAction(tx, req.userId!, "user_notified", userId, await userLabel(tx, userId), { title: body.title }));
+    res.json(result);
+  })
+);
+
+// ------------------------------------------------------------------------------------------ settings
+
+adminRouter.get(
+  "/settings",
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const category = typeof req.query.category === "string" ? req.query.category : undefined;
+    res.json(
+      await prisma.appSettings.findMany({
+        where: category ? { category } : {},
+        select: { key: true, value: true, label: true, category: true },
+        orderBy: { key: "asc" },
+      })
+    );
+  })
+);
+
+// Body: { updates: [{ key, value }] }. Only existing keys can be changed.
+adminRouter.put(
+  "/settings",
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const { updates } = z
+      .object({ updates: z.array(z.object({ key: z.string().min(1).max(100), value: z.union([z.string(), z.number(), z.boolean(), z.array(z.any()), z.record(z.any())]) })).min(1).max(50) })
+      .parse(req.body);
+    await prisma.$transaction(async (tx) => {
+      for (const u of updates) {
+        const { count } = await tx.appSettings.updateMany({
+          where: { key: u.key },
+          data: { value: u.value as Prisma.InputJsonValue, updated_by: req.userId!, updated_at: new Date() },
+        });
+        if (count === 0) throw new ApiError(404, `Unknown setting: ${u.key}`);
+      }
+      await logAdminAction(tx, req.userId!, "settings_updated", null, null, { keys: updates.map((u) => u.key) });
+    });
+    res.json({ updated: updates.length });
+  })
+);
+
+// ------------------------------------------------------------------------------------------ rooms, messages, subscriptions
+
+adminRouter.get(
+  "/rooms",
+  modOrSuper,
+  asyncHandler(async (req, res) => {
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const rows = await prisma.$queryRaw<unknown[]>(Prisma.sql`
+      SELECT r.id, r.name, r.type, r.avatar_url, r.created_by, r.created_at, r.is_active,
+             (SELECT count(*) FROM room_members m WHERE m.room_id = r.id)::int AS member_count,
+             (SELECT count(*) FROM messages x WHERE x.room_id = r.id)::int AS message_count
+        FROM rooms r
+       WHERE r.type <> 'dm' AND (${q} = '' OR r.name ILIKE '%' || ${q} || '%')
+       ORDER BY r.created_at DESC
+       LIMIT 300`);
+    res.json(rows);
+  })
+);
+
+adminRouter.delete(
+  "/rooms/:roomId",
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const roomId = uuid.parse(req.params.roomId);
+    await prisma.$transaction(async (tx) => {
+      const room = await tx.rooms.findUnique({ where: { id: roomId }, select: { name: true } });
+      if (!room) throw new ApiError(404, "Room not found");
+      await deleteRoomCascade(tx, roomId);
+      await logAdminAction(tx, req.userId!, "room_deleted", null, room.name, { room_id: roomId });
+    });
+    emitToRoom(roomId, "room:deleted", { roomId });
+    res.status(204).send();
+  })
+);
+
+// Moderators remove reported messages here (they aren't room members, so the normal delete route refuses them).
+adminRouter.delete(
+  "/messages/:messageId",
+  modOrSuper,
+  asyncHandler(async (req, res) => {
+    const id = uuid.parse(req.params.messageId);
+    const roomId = await prisma.$transaction(async (tx) => {
+      const m = await tx.messages.findUnique({ where: { id }, select: { room_id: true, sender_id: true } });
+      if (!m) return null;
+      await deleteMessagesCascade(tx, [id]);
+      await logAdminAction(tx, req.userId!, "message_deleted", m.sender_id, null, { message_id: id, room_id: m.room_id });
+      return m.room_id;
+    });
+    if (roomId) emitToRoom(roomId, "message:delete", { id });
+    res.status(204).send();
+  })
+);
+
+// Subscriptions with the subscriber's name. ?since=ISO limits to newer rows; ?status=active filters.
+adminRouter.get(
+  "/subscriptions",
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const status = typeof req.query.status === "string" ? req.query.status : null;
+    const since = typeof req.query.since === "string" && !isNaN(Date.parse(req.query.since)) ? new Date(req.query.since) : null;
+    const limit = clampInt(req.query.limit, 200, 1, 1000);
+    res.json(
+      await prisma.$queryRaw<unknown[]>(Prisma.sql`
+        SELECT s.id, s.user_id, s.plan, s.status, s.amount_ngn, s.payment_ref, s.current_period_start, s.current_period_end,
+               s.created_at, p.display_name, p.username, p.avatar_url
+          FROM subscriptions s LEFT JOIN profiles p ON p.user_id = s.user_id
+         WHERE (${status}::text IS NULL OR s.status = ${status})
+           AND (${since}::timestamptz IS NULL OR s.created_at >= ${since})
+         ORDER BY s.created_at DESC LIMIT ${limit}`)
+    );
   })
 );

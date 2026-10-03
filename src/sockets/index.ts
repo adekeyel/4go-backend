@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { hasCallPermission, CallType } from "@/lib/callPermissions";
 import { setPresence } from "@/lib/presence";
+import { verifyInvite, pushIncomingCall } from "@/lib/callPush";
+import { getAdminRole } from "@/lib/roles";
 
 interface AuthedSocket extends Socket {
   data: { userId: string };
@@ -69,8 +71,13 @@ export function initSockets(httpServer: HttpServer) {
     if (prevCount === 0) await setOnline(userId, true);
 
     // --- Chat rooms ---
-    s.on("room:join", (roomId: string) => {
-      s.join(`room:${roomId}`);
+    // Only members get a room's live messages, typing and reactions (before, any signed-in user could join any room id).
+    s.on("room:join", async (roomId: string) => {
+      if (typeof roomId !== "string" || !/^[0-9a-f-]{36}$/i.test(roomId)) return;
+      const member = await prisma.roomMembers
+        .findUnique({ where: { room_id_user_id: { room_id: roomId, user_id: userId } }, select: { user_id: true } })
+        .catch(() => null);
+      if (member) s.join(`room:${roomId}`);
     });
     s.on("room:leave", (roomId: string) => {
       s.leave(`room:${roomId}`);
@@ -104,37 +111,46 @@ export function initSockets(httpServer: HttpServer) {
         roomId: string;
         calleeId: string;
         callType: CallType;
-        callerName: string;
-        callerAvatarUrl?: string | null;
+        group?: boolean;
         sdp: unknown;
       }) => {
-        const calleeProfile = await prisma.profiles.findUnique({
-          where: { user_id: payload.calleeId },
-          select: { rank: true },
-        });
+        try {
+          // The call row (created through POST /api/calls) is the source of truth. The caller's name and avatar
+          // come from their profile, not from the message, so an invite can't be forged or impersonate someone.
+          const call = await verifyInvite(userId, payload ?? ({} as never));
+          if (!call) return;
 
-        if (!hasCallPermission(payload.callType, calleeProfile?.rank)) {
-          const declined = await prisma.callLogs
-            .update({ where: { id: payload.callId }, data: { status: "declined", duration_seconds: 0 } })
-            .catch(() => undefined);
-          if (declined) emitToRoom(payload.roomId, "call:log", declined);
-          s.emit("call:signal", {
-            callId: payload.callId,
-            from: payload.calleeId,
-            signal: { type: "reject", reason: "rank_not_permitted" },
+          const calleeProfile = await prisma.profiles.findUnique({
+            where: { user_id: call.callee_id },
+            select: { rank: true },
           });
-          return;
-        }
 
-        getIo().to(`user:${payload.calleeId}`).emit("call:invite", {
-          callId: payload.callId,
-          roomId: payload.roomId,
-          callerId: userId,
-          callType: payload.callType,
-          callerName: payload.callerName,
-          callerAvatarUrl: payload.callerAvatarUrl ?? null,
-          sdp: payload.sdp,
-        });
+          if (!hasCallPermission(call.call_type as CallType, calleeProfile?.rank)) {
+            const declined = await prisma.callLogs
+              .update({ where: { id: call.id }, data: { status: "declined", duration_seconds: 0 } })
+              .catch(() => undefined);
+            if (declined) emitToRoom(call.room_id, "call:log", declined);
+            s.emit("call:signal", {
+              callId: call.id,
+              from: call.callee_id,
+              signal: { type: "reject", reason: "rank_not_permitted" },
+            });
+            return;
+          }
+
+          getIo().to(`user:${call.callee_id}`).emit("call:invite", {
+            callId: call.id,
+            roomId: call.room_id,
+            callerId: userId,
+            callType: call.call_type,
+            callerName: call.callerName,
+            callerAvatarUrl: call.callerAvatarUrl,
+            sdp: payload.sdp,
+          });
+          void pushIncomingCall(call, Boolean(payload.group)); // rings a locked/closed phone; once per call
+        } catch (err) {
+          console.error("[socket] call:invite failed:", (err as Error).message);
+        }
       }
     );
 
@@ -143,8 +159,23 @@ export function initSockets(httpServer: HttpServer) {
     });
 
     // --- Status/story reactions live-update channel ---
-    s.on("status:join", (statusId: string) => s.join(`status:${statusId}`));
+    s.on("status:join", (statusId: string) => {
+      if (typeof statusId === "string" && /^[0-9a-f-]{36}$/i.test(statusId)) s.join(`status:${statusId}`);
+    });
     s.on("status:leave", (statusId: string) => s.leave(`status:${statusId}`));
+
+    // --- Support chat: a conversation room shared by the user who owns it and the staff answering it ---
+    // Joined with support:join { conversationId }; typing events go to everyone else in it.
+    s.on("support:join", async (conversationId: string) => {
+      if (typeof conversationId !== "string" || !/^[0-9a-f-]{36}$/i.test(conversationId)) return;
+      const conv = await prisma.supportConversations.findUnique({ where: { id: conversationId }, select: { user_id: true } }).catch(() => null);
+      if (!conv) return;
+      if (conv.user_id === userId || (await getAdminRole(userId).catch(() => null))) s.join(`support:${conversationId}`);
+    });
+    s.on("support:leave", (conversationId: string) => s.leave(`support:${conversationId}`));
+    s.on("support:typing", ({ conversationId, typing }: { conversationId: string; typing: boolean }) => {
+      if (s.rooms.has(`support:${conversationId}`)) s.to(`support:${conversationId}`).emit("support:typing", { conversationId, userId, typing: Boolean(typing) });
+    });
 
     s.on("disconnect", async () => {
       const count = (onlineCounts.get(userId) ?? 1) - 1;
