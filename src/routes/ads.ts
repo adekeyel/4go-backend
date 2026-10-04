@@ -14,7 +14,7 @@ const webUrl = z.string().url().max(2048).refine((u) => /^https?:\/\//i.test(u),
 
 // ------------------------------------------------------------------------------ public
 
-// Active banners. Optional ?placement=home|room|menu|feed|profile|dm and ?position=top|middle.
+// Active banners. Optional ?placement=home|room|menu|feed|profile|dm and ?position=top|middle|bottom.
 adsRouter.get(
   "/",
   asyncHandler(async (req, res) => {
@@ -76,7 +76,7 @@ const bannerSchema = z.object({
   placements: z.array(z.enum(["home", "room", "menu", "feed", "profile", "dm"])).min(1),
   budget: z.number().min(0).max(1_000_000_000).default(0),
   status: z.enum(["active", "paused", "ended"]).default("active"),
-  position: z.enum(["top", "middle"]).default("middle"),
+  position: z.enum(["top", "middle", "bottom"]).default("middle"),
 });
 
 adsRouter.post(

@@ -241,10 +241,17 @@ broadcastRouter.get(
     const since = typeof req.query.since === "string" && !isNaN(Date.parse(req.query.since)) ? new Date(req.query.since) : new Date(Date.now() - 7 * 86_400_000);
     const status = typeof req.query.status === "string" && req.query.status ? req.query.status : undefined;
     const q = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : undefined;
+    // e.g. ?template=admin_broadcast to see only broadcast emails (not OTP and other system mail).
+    const template = typeof req.query.template === "string" && req.query.template ? req.query.template : undefined;
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
     res.json(
       await prisma.emailSendLog.findMany({
-        where: { created_at: { gte: since }, ...(status ? { status } : {}), ...(q ? { recipient_email: { contains: q, mode: "insensitive" } } : {}) },
+        where: {
+          created_at: { gte: since },
+          ...(status ? { status } : {}),
+          ...(template ? { template_name: template } : {}),
+          ...(q ? { recipient_email: { contains: q, mode: "insensitive" } } : {}),
+        },
         orderBy: { created_at: "desc" },
         take: limit,
       })

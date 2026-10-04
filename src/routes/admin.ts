@@ -59,12 +59,14 @@ adminRouter.get(
   staffLookup,
   asyncHandler(async (req, res) => {
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    // The dashboard asks for up to 1000 (its growth charts and search read from this list); the default stays 200.
+    const limit = clampInt(req.query.limit, 200, 1, 1000);
     const users = await prisma.profiles.findMany({
       where: q
         ? { OR: [{ username: { contains: q, mode: "insensitive" } }, { display_name: { contains: q, mode: "insensitive" } }] }
         : {},
       orderBy: { created_at: "desc" },
-      take: 200,
+      take: limit,
     });
     if (req.adminRole === "super_admin") return res.json(users);
     res.json(
@@ -600,6 +602,22 @@ adminRouter.get(
         };
       })
     );
+  })
+);
+
+// Force-logout one device: removes its push session. Super admin only, and recorded in the audit log.
+adminRouter.delete(
+  "/devices/:deviceId",
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const id = uuid.parse(req.params.deviceId);
+    await prisma.$transaction(async (tx) => {
+      const device = await tx.pushSubscriptions.findUnique({ where: { id }, select: { user_id: true } });
+      if (!device) throw new ApiError(404, "Device not found");
+      await tx.pushSubscriptions.delete({ where: { id } });
+      await logAdminAction(tx, req.userId!, "device_revoked", device.user_id, null, { device_id: id });
+    });
+    res.status(204).send();
   })
 );
 

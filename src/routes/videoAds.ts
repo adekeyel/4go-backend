@@ -179,10 +179,9 @@ const fields = z.object({
 const createSchema = fields;
 const patchSchema = fields.partial();
 
-type AdFields = z.output<typeof fields>;
-
 /** Rules that span several fields. Run on the full, merged ad so a PATCH can't produce an invalid combination. */
-function checkRules(ad: Pick<AdFields, "placement" | "mid_roll_at_seconds" | "starts_at" | "ends_at">) {
+// `placement` is a plain string here: on PATCH the merged ad comes from the database, which types it as string, not the enum.
+function checkRules(ad: { placement: string; mid_roll_at_seconds?: number | null; starts_at?: Date | null; ends_at?: Date | null }) {
   if (ad.placement === "mid_roll" && ad.mid_roll_at_seconds == null) {
     throw new ApiError(400, "A mid-roll ad needs the time (in seconds) it should play at");
   }
