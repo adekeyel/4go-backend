@@ -63,9 +63,9 @@ callsRouter.patch(
     });
     emitToRoom(updated.room_id, "call:log", updated);
     emitToUser(updated.callee_id, "call:updated", updated);
-    // Whatever the outcome, the callee's phone should stop ringing / drop the notification. Only when the status
-    // actually changed, so retries don't push twice.
-    if (call.status !== updated.status) void pushCallEnded(updated);
+    // Whatever the outcome, the callee's phone should stop ringing / drop the notification. Always sent: a call row
+    // starts as "cancelled", so a caller hanging up before an answer doesn't change the status but must still stop the ring.
+    void pushCallEnded(updated);
     res.json(updated);
   })
 );

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, optionalAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
-import { addComment, deleteComment, editComment, purgePostData, toggleLike, toggleSave } from "@/lib/postActions";
+import { addComment, commentsWithProfiles, deleteComment, editComment, purgePostData, toggleLike, toggleSave } from "@/lib/postActions";
 import { assertCanSendToRoom, sendRoomMessage } from "@/lib/roomMessages";
 
 export const feedRouter = Router();
@@ -114,6 +114,7 @@ feedRouter.get(
       where: { ...(before ? { created_at: { lt: before } } : {}), ...(hidden.length ? { user_id: { notIn: hidden } } : {}) },
       orderBy: { created_at: "desc" },
       take: limit,
+      skip: before ? 0 : offset,
     });
     res.json(await hydrate(posts, req.userId));
   })
@@ -133,6 +134,34 @@ feedRouter.get(
     const byId = new Map(posts.map((p) => [p.id, p]));
     const ordered = saves.flatMap((s) => (byId.has(s.post_id) ? [byId.get(s.post_id)!] : []));
     res.json(await hydrate(ordered, req.userId));
+  })
+);
+
+// How many posts the signed-in user has made (onboarding checklist).
+feedRouter.get(
+  "/mine/count",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    res.json({ count: await prisma.posts.count({ where: { user_id: req.userId! } }) });
+  })
+);
+
+// One post (deep links from mentions and shared-post cards), with author and your liked state.
+// Declared after "/saved" so that word isn't read as a post id.
+feedRouter.get(
+  "/:postId",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const post = await prisma.posts.findUnique({ where: { id: uuid.parse(req.params.postId) } });
+    if (!post) throw new ApiError(404, "Post not found");
+    if (req.userId) {
+      const blocked = await prisma.userBlocks.findFirst({
+        where: { OR: [{ blocker_id: req.userId, blocked_id: post.user_id }, { blocker_id: post.user_id, blocked_id: req.userId }] },
+        select: { blocker_id: true },
+      });
+      if (blocked) throw new ApiError(404, "Post not found");
+    }
+    res.json((await hydrate([post], req.userId))[0]);
   })
 );
 
@@ -209,11 +238,7 @@ feedRouter.get(
   "/:postId/comments",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const comments = await prisma.postComments.findMany({
-      where: { post_id: uuid.parse(req.params.postId) },
-      orderBy: { created_at: "asc" },
-    });
-    res.json(comments);
+    res.json(await commentsWithProfiles(uuid.parse(req.params.postId)));
   })
 );
 

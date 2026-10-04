@@ -90,7 +90,7 @@ function readCsv(table: string): Record<string, string>[] | null {
   if (!fs.existsSync(file)) return null;
   const content = fs.readFileSync(file, "utf8");
   if (!content.trim()) return [];
-  return parse(content, { delimiter: ";", columns: true, relax_quotes: true, skip_empty_lines: true });
+  return parse(content, { delimiter: ";", columns: true, relax_quotes: true, skip_empty_lines: true, bom: true });
 }
 
 const BATCH_SIZE = 500;
@@ -191,20 +191,38 @@ async function patchRealCredentials(client: Client) {
     columns: true,
     relax_quotes: true,
     skip_empty_lines: true,
+    bom: true,
   });
 
+  const required = ["id", "email", "encrypted_password"];
+  const found = rows.length ? Object.keys(rows[0]) : [];
+  const missing = required.filter((c) => !found.includes(c));
+  if (missing.length) {
+    throw new Error(
+      `auth_users.csv is not the auth.users export. Missing column(s): ${missing.join(", ")}. ` +
+        `Columns found: ${found.join(", ") || "(file is empty)"}. ` +
+        `Re-run scripts/export-auth-users.sql in Supabase and save the result as scripts/data/auth_users.csv.`
+    );
+  }
+
   let patched = 0;
+  let skipped = 0;
   for (const row of rows) {
-    if (!row.id || !row.encrypted_password) continue;
-    await client.query(
+    if (!row.id || !row.encrypted_password) {
+      skipped++;
+      continue;
+    }
+    const result = await client.query(
       `UPDATE public.users
        SET email = $2, phone = NULLIF($3, ''), password_hash = $4,
            email_verified_at = NULLIF($5, '')::timestamptz
        WHERE id = $1`,
-      [row.id, row.email || null, row.phone || "", row.encrypted_password, row.email_confirmed_at || ""]
+      [row.id, row.email ? row.email.toLowerCase().trim() : null, row.phone || "", row.encrypted_password, row.email_confirmed_at || ""]
     );
-    patched++;
+    if (result.rowCount) patched++;
+    else skipped++;
   }
+  if (skipped) console.warn(`  ! ${skipped} row(s) skipped (no matching user id, or no password hash)`);
   console.log(`Patched real credentials for ${patched} users from auth_users.csv`);
 }
 

@@ -54,10 +54,14 @@ walletRouter.get(
 walletRouter.get(
   "/transactions",
   asyncHandler(async (req, res) => {
+    // Optional filters for the analytics screen: ?source=earning&since=<iso>&limit=<=2000 (default 200).
+    const source = typeof req.query.source === "string" && req.query.source ? req.query.source : undefined;
+    const since = typeof req.query.since === "string" && !isNaN(Date.parse(req.query.since)) ? new Date(req.query.since) : undefined;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 2000);
     const transactions = await prisma.transactions.findMany({
-      where: { user_id: req.userId! },
+      where: { user_id: req.userId!, ...(source ? { source } : {}), ...(since ? { created_at: { gte: since } } : {}) },
       orderBy: { created_at: "desc" },
-      take: 200,
+      take: limit,
     });
     res.json(transactions);
   })

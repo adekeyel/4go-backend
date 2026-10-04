@@ -127,6 +127,9 @@ These run inside the server process. If you run several instances they are safe 
 - src/routes/webhooks.ts
 ### Replaced (diff these against your copies first if you've edited them since uploading)
 - src/routes/calls.ts
+- src/routes/feed.ts
+- src/routes/pages.ts
+- src/lib/postActions.ts
 - src/routes/broadcast.ts
 - src/routes/contacts.ts
 - src/lib/profileFlags.ts

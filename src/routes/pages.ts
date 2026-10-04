@@ -6,7 +6,7 @@ import { requireAuth, optionalAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { lockProfile } from "@/lib/coins";
 import { isSuperAdmin } from "@/lib/roles";
-import { addComment, deleteComment, editComment, purgePostData, toggleLike, toggleSave } from "@/lib/postActions";
+import { commentsWithProfiles, addComment, deleteComment, editComment, purgePostData, toggleLike, toggleSave } from "@/lib/postActions";
 import { BOOST_PLANS, BoostPlan, boostPagePost, recordPageView } from "@/lib/pageEconomy";
 import { assertCanSendToRoom, sendRoomMessage } from "@/lib/roomMessages";
 
@@ -158,6 +158,17 @@ pagesRouter.delete(
   })
 );
 
+// One page post (deep links, shared-post cards, the post view page). Declared after "/posts/saved".
+pagesRouter.get(
+  "/posts/:postId",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const post = await prisma.pagePosts.findUnique({ where: { id: uuid.parse(req.params.postId) } });
+    if (!post) throw new ApiError(404, "Post not found");
+    res.json((await hydratePosts([post], req.userId))[0]);
+  })
+);
+
 pagesRouter.post(
   "/posts/:postId/like",
   requireAuth,
@@ -201,12 +212,7 @@ pagesRouter.get(
   "/posts/:postId/comments",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    res.json(
-      await prisma.postComments.findMany({
-        where: { post_id: uuid.parse(req.params.postId) },
-        orderBy: { created_at: "asc" },
-      })
-    );
+    res.json(await commentsWithProfiles(uuid.parse(req.params.postId)));
   })
 );
 
@@ -389,6 +395,52 @@ pagesRouter.delete(
 
 // Ports follow_page. The SQL bumped followers_count even when you already followed;
 // here it only changes when a follow row is really added or removed.
+// Who follows this page (first 200), for the page's Followers tab.
+pagesRouter.get(
+  "/:pageId/followers",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const follows = await prisma.pageFollowers.findMany({ where: { page_id: uuid.parse(req.params.pageId) }, orderBy: { followed_at: "desc" }, take: 200 });
+    res.json(
+      follows.length
+        ? await prisma.profiles.findMany({
+            where: { user_id: { in: follows.map((f) => f.user_id) } },
+            select: { user_id: true, display_name: true, username: true, avatar_url: true },
+          })
+        : []
+    );
+  })
+);
+
+// Pages the page's OWNER follows, for the page's "Following" tab.
+pagesRouter.get(
+  "/:pageId/owner-following",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const page = await prisma.pages.findUnique({ where: { id: uuid.parse(req.params.pageId) }, select: { owner_id: true } });
+    if (!page) throw new ApiError(404, "Page not found");
+    const follows = await prisma.pageFollowers.findMany({ where: { user_id: page.owner_id }, take: 200 });
+    res.json(
+      follows.length
+        ? await prisma.pages.findMany({ where: { id: { in: follows.map((f) => f.page_id) } }, select: { id: true, name: true, profile_image: true, category: true } })
+        : []
+    );
+  })
+);
+
+// Boosts bought for this page's posts (owner or super admin), newest first, for the dashboard.
+pagesRouter.get(
+  "/:pageId/boosts",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const page = await assertPageManager(uuid.parse(req.params.pageId), req.userId!);
+    const posts = await prisma.pagePosts.findMany({ where: { page_id: page.id }, select: { id: true } });
+    res.json(
+      posts.length ? await prisma.postBoosts.findMany({ where: { post_id: { in: posts.map((p) => p.id) } }, orderBy: { created_at: "desc" }, take: 200 }) : []
+    );
+  })
+);
+
 pagesRouter.post(
   "/:pageId/follow",
   requireAuth,

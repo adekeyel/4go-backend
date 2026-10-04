@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/middleware/errorHandler";
 import { Tx } from "@/lib/coins";
 
@@ -130,4 +131,15 @@ export async function purgePostData(tx: Tx, postIds: string[]) {
   await tx.postSaves.deleteMany({ where: { post_id: { in: postIds } } });
   await tx.pagePostUniqueViews.deleteMany({ where: { post_id: { in: postIds } } });
   await tx.postBoosts.deleteMany({ where: { post_id: { in: postIds } } });
+}
+
+/** Comments with the author's name and avatar attached, so the client needs no second lookup. */
+export async function commentsWithProfiles(postId: string) {
+  const comments = await prisma.postComments.findMany({ where: { post_id: postId }, orderBy: { created_at: "asc" } });
+  const ids = [...new Set(comments.map((c) => c.user_id))];
+  const profiles = ids.length
+    ? await prisma.profiles.findMany({ where: { user_id: { in: ids } }, select: { user_id: true, display_name: true, avatar_url: true, username: true } })
+    : [];
+  const byId = new Map(profiles.map((p) => [p.user_id, p]));
+  return comments.map((c) => ({ ...c, profile: byId.get(c.user_id) ?? null }));
 }

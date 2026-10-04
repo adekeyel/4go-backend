@@ -20,6 +20,7 @@ const PUBLIC_FIELDS = {
   is_online: true,
   last_seen: true,
   rank: true,
+  total_online_minutes: true,
   is_monetized: true,
   is_premium: true,
   is_verified: true,
@@ -107,6 +108,21 @@ profilesRouter.post(
   })
 );
 
+// Top users by time online (public leaderboard).
+profilesRouter.get(
+  "/leaderboard",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+    const profiles = await prisma.profiles.findMany({
+      orderBy: { total_online_minutes: "desc" },
+      take: limit,
+      select: PUBLIC_FIELDS,
+    });
+    res.json(profiles);
+  })
+);
+
 profilesRouter.get(
   "/:userId",
   optionalAuth,
@@ -132,6 +148,17 @@ profilesRouter.get(
       const ids = req.query.ids.split(",").filter(Boolean);
       if (!ids.length) return res.json([]);
       const profiles = await prisma.profiles.findMany({ where: { user_id: { in: ids } }, select: PUBLIC_FIELDS });
+      return res.json(profiles);
+    }
+
+    // Exact username lookup for a short list (?usernames=a,b,c), e.g. the support agents.
+    if (typeof req.query.usernames === "string") {
+      const names = req.query.usernames.split(",").map((n) => n.trim()).filter(Boolean).slice(0, 20);
+      if (!names.length) return res.json([]);
+      const profiles = await prisma.profiles.findMany({
+        where: { OR: names.map((n) => ({ username: { equals: n, mode: "insensitive" as const } })) },
+        select: PUBLIC_FIELDS,
+      });
       return res.json(profiles);
     }
 

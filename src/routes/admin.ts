@@ -805,3 +805,22 @@ adminRouter.get(
     );
   })
 );
+
+// ------------------------------------------------------------------------------------------ pages
+
+// Pages list for the admin screen. Deleting one is DELETE /api/pages/:id (a super admin is allowed there).
+adminRouter.get(
+  "/pages",
+  modOrSuper,
+  asyncHandler(async (req, res) => {
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    res.json(
+      await prisma.pages.findMany({
+        where: q ? { name: { contains: q, mode: "insensitive" } } : {},
+        select: { id: true, name: true, category: true, followers_count: true, owner_id: true, created_at: true, profile_image: true, is_monetized: true },
+        orderBy: { created_at: "desc" },
+        take: 300,
+      })
+    );
+  })
+);

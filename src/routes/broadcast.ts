@@ -33,7 +33,7 @@ broadcastRouter.post(
     const body = announceSchema.parse(req.body);
     const adminId = req.userId!;
 
-    await prisma.globalNotifications.create({
+    const announcement = await prisma.globalNotifications.create({
       data: { title: body.title, message: body.message, priority: body.priority, sent_by: adminId },
     });
 
@@ -71,7 +71,13 @@ broadcastRouter.post(
         failure_count: 0,
       },
     });
-    getIo().emit("notification:new", { title: body.title, message: body.message, priority: body.priority });
+    getIo().emit("notification:new", {
+      id: announcement.id,
+      title: announcement.title,
+      message: announcement.message,
+      priority: announcement.priority,
+      created_at: announcement.created_at,
+    });
     await prisma.$transaction((tx) => logAdminAction(tx, adminId, "broadcast_announce", null, body.title, { recipients: profiles.length }));
     res.json({ ok: true, recipients: profiles.length });
   })
