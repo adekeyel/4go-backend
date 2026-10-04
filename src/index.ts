@@ -43,6 +43,10 @@ import { settingsRouter } from "@/routes/settings";
 
 const app = express();
 
+// Without this, req.ip is the proxy's address for every visitor (affects banner ad counting, login session
+// addresses and the video-ad limits). See TRUST_PROXY in lib/env.ts.
+if (env.trustProxy > 0) app.set("trust proxy", env.trustProxy);
+
 app.use(helmet());
 app.use(
   cors({
@@ -55,6 +59,13 @@ app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Shows the address this server believes the caller has. Open it from your phone or laptop: if "ip" is your own
+// public address, TRUST_PROXY is right. If it's some other (shared) address, raise TRUST_PROXY by one and
+// check again. Only reveals the caller's own request details.
+app.get("/health/ip", (req, res) =>
+  res.json({ ip: req.ip, forwarded_for: req.headers["x-forwarded-for"] ?? null, trust_proxy_hops: env.trustProxy })
+);
 
 app.use("/api/auth", authRouter);
 app.use("/api/profiles", profilesRouter);

@@ -47,5 +47,11 @@ export const env = {
     subject: process.env.VAPID_SUBJECT ?? "mailto:support@4go.com.ng",
   },
 
+  // How many reverse proxies sit between the internet and this server (Railway, Cloudflare, ...). Express needs
+  // this to see the real visitor address: at 0 every visitor looks like the proxy. Too HIGH a number lets a
+  // visitor fake their address, so set it to exactly the number of proxies; open /health/ip to check.
+  // Whole numbers only; "true" (trust everything) is deliberately not accepted.
+  trustProxy: /^\d+$/.test(process.env.TRUST_PROXY ?? "") ? Number(process.env.TRUST_PROXY) : 0,
+
   isProd: process.env.NODE_ENV === "production",
 };

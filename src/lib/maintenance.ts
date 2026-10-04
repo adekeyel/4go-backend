@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { purgeOldAdViews } from "@/lib/videoAdEvents";
 
 /**
  * Premium status used to be kept right by database triggers and never expired on its own: once a
@@ -37,4 +38,9 @@ export function startMaintenance() {
   const sweep = () => cleanupStalePresence().catch((e) => console.error("[maintenance] presence sweep failed:", (e as Error).message));
   sweep();
   setInterval(sweep, 60_000).unref();
+
+  // Video-ad view records are only needed while their tokens are valid; clear out the old ones hourly.
+  const purgeAdViews = () => purgeOldAdViews(prisma).catch((e) => console.error("[maintenance] ad view purge failed:", (e as Error).message));
+  purgeAdViews();
+  setInterval(purgeAdViews, 60 * 60_000).unref();
 }

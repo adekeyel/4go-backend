@@ -1,16 +1,37 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, requireRole } from "@/middleware/auth";
+import { optionalAuth, requireAuth, requireRole } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { uploadAdVideo } from "@/middleware/upload";
 import { uploadBuffer, videoThumbnailUrl } from "@/lib/cloudinary";
 import { logAdminAction } from "@/lib/audit";
 import { selectAds } from "@/lib/videoAdSelect";
+import { env } from "@/lib/env";
+import { createAdTokenSigner } from "@/lib/videoAdTokens";
+import { recordAdEvent } from "@/lib/videoAdEvents";
+import { createRateLimiter } from "@/lib/rateLimit";
+import { viewerSeesAds } from "@/lib/videoAdAudience";
+import { isPremium } from "@/lib/social";
 
 export const videoAdsRouter = Router();
 
 const uuid = z.string().uuid();
+
+const tokens = createAdTokenSigner(env.jwtAccessSecret);
+
+// Who is watching, for rate limits and the per-viewer cap: the account when logged in, otherwise the address.
+// (An address is only meaningful once TRUST_PROXY is set correctly - see /health/ip.)
+const viewerKey = (req: { userId?: string; ip?: string }) => (req.userId ? `u:${req.userId}` : `ip:${req.ip ?? "unknown"}`);
+
+// Soft limit on how many times one viewer can ask which ads to play (a person scrolling a long feed asks for a
+// few dozen). Guests get more room because many of them can share one address. Over the limit the answer is
+// simply "no ads": the video still plays, only the ad is skipped.
+const SERVE_WINDOW_MS = 10 * 60_000;
+const SERVE_MAX_USER = 300;
+const SERVE_MAX_GUEST = 1500;
+const serveLimiter = createRateLimiter(SERVE_WINDOW_MS);
+setInterval(() => serveLimiter.sweep(), SERVE_WINDOW_MS).unref();
 
 // Ad videos are played inside every viewer's browser, so require https (a plain http video would be
 // blocked as mixed content anyway). Links and images follow the same rule as banner ads: web addresses
@@ -25,8 +46,8 @@ const staff = [requireAuth, requireRole("super_admin", "moderator")];
 
 // "Which ads play inside this video?" The player calls this once it knows the video's real length (from
 // the browser's loaded metadata). The page comes from the post itself, not from the caller, so page targeting
-// can't be spoofed and only genuine page-post videos ever get ads. Nothing is counted here: an ad is only
-// counted when the player actually plays it (step 6).
+// can't be spoofed and only genuine page-post videos ever get ads. Nothing is counted here: the player
+// reports a view only when the ad actually starts playing (see the events route below).
 const serveQuery = z.object({
   post_id: uuid,
   duration: z.coerce.number().min(0).max(86_400),
@@ -34,12 +55,18 @@ const serveQuery = z.object({
 
 videoAdsRouter.get(
   "/serve",
+  optionalAuth,
   asyncHandler(async (req, res) => {
     const { post_id, duration } = serveQuery.parse(req.query);
     res.set("Cache-Control", "no-store"); // the pick is random per request
+    if (!serveLimiter.allow(viewerKey(req), req.userId ? SERVE_MAX_USER : SERVE_MAX_GUEST)) return res.json({ ads: [] });
 
     const post = await prisma.pagePosts.findUnique({ where: { id: post_id }, select: { page_id: true, media_type: true } });
     if (!post || post.media_type !== "video") return res.json({ ads: [] });
+
+    // Premium members don't see ads. Only the viewer matters, not who posted the video. Checked before any ad is
+    // picked, so no token is issued and nothing is ever counted for them.
+    if (!(await viewerSeesAds(req.userId, isPremium))) return res.json({ ads: [] });
 
     const now = new Date();
     // Status, campaign window and page targeting are filtered in the database. The "longer than N seconds"
@@ -60,8 +87,40 @@ videoAdsRouter.get(
     });
 
     // Only what the player needs: no budget, counters, targeting or admin fields.
-    const ads = selectAds(candidates, duration).map(({ min_video_seconds: _min, ...ad }) => ad);
+    const ads = selectAds(candidates, duration).map(({ min_video_seconds: _min, ...ad }) => ({
+      ...ad,
+      token: tokens.issue(ad.id, post_id), // lets the player report this ad's view / completion / click
+    }));
     res.json({ ads });
+  })
+);
+
+// The player reports what the viewer actually saw. Public (guests watch videos too), but an event only counts
+// when it carries a valid token from a real serve for this exact ad and post. Counting is exact and
+// once-only per token, and a completion or click only counts after that token's view; one viewer can add at
+// most a set number of views to the same ad per hour (all in lib/videoAdEvents.ts, backed by the database so it
+// holds across restarts and multiple instances). Anything that doesn't count is quietly ignored (204), so a
+// script learns nothing about why.
+const eventBody = z.object({
+  type: z.enum(["impression", "completion", "click"]),
+  post_id: uuid,
+  token: z.string().max(300),
+});
+
+videoAdsRouter.post(
+  "/:adId/events",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const adId = uuid.parse(req.params.adId);
+    const { type, post_id, token } = eventBody.parse(req.body);
+
+    const verified = tokens.verify(token, adId, post_id);
+    if (verified) {
+      await prisma.$transaction((tx) =>
+        recordAdEvent(tx, { adId, postId: post_id, nonce: verified.nonce, viewerHash: tokens.hashViewer(viewerKey(req)), type })
+      );
+    }
+    res.status(204).send();
   })
 );
 
@@ -120,13 +179,10 @@ const fields = z.object({
 const createSchema = fields;
 const patchSchema = fields.partial();
 
+type AdFields = z.output<typeof fields>;
+
 /** Rules that span several fields. Run on the full, merged ad so a PATCH can't produce an invalid combination. */
-function checkRules(ad: {
-  placement?: string;
-  mid_roll_at_seconds?: number | null;
-  starts_at?: Date | null;
-  ends_at?: Date | null;
-}) {
+function checkRules(ad: Pick<AdFields, "placement" | "mid_roll_at_seconds" | "starts_at" | "ends_at">) {
   if (ad.placement === "mid_roll" && ad.mid_roll_at_seconds == null) {
     throw new ApiError(400, "A mid-roll ad needs the time (in seconds) it should play at");
   }
