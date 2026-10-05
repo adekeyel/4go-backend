@@ -30,6 +30,7 @@ import { startEmailWorker } from "@/lib/emailQueue";
 import { payoutsRouter } from "@/routes/payouts";
 import { webhooksRouter } from "@/routes/webhooks";
 import { startMaintenance } from "@/lib/maintenance";
+import { startCallSweeper } from "@/lib/callLifecycle";
 import { adsRouter } from "@/routes/ads";
 import { videoAdsRouter } from "@/routes/videoAds";
 import { employeesRouter } from "@/routes/employees";
@@ -108,4 +109,5 @@ server.listen(env.port, () => {
   console.log(`forego backend listening on :${env.port} (${env.nodeEnv})`);
   startEmailWorker();
   startMaintenance();
+  startCallSweeper(); // turns unanswered ringing calls into "missed" even when nobody's app is open
 });

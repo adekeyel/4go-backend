@@ -8,6 +8,7 @@ import { emitToRoom, emitToUser } from "@/sockets";
 import { assertCanSendToRoom } from "@/lib/roomMessages";
 import { pushNewMessage } from "@/lib/push";
 import { deleteMessagesCascade } from "@/lib/cleanup";
+import { deliverToOnlineRecipients } from "@/lib/delivery";
 
 export const messagesRouter = Router();
 messagesRouter.use(requireAuth);
@@ -143,6 +144,9 @@ const sendSchema = z.object({
   media_url: z.string().url().optional(),
   duration: z.number().int().optional(),
   reply_to: z.string().uuid().optional(),
+  // Chosen by the sender's app so it can show the message instantly and match it up with the saved one.
+  // Not stored; it is only echoed back.
+  client_id: z.string().max(64).optional(),
 });
 
 messagesRouter.post(
@@ -165,7 +169,9 @@ messagesRouter.post(
       },
     });
 
-    emitToRoom(req.params.roomId, "message:new", message);
+    // `client_id` lets the sender's own screen swap its "sending..." bubble for this one without showing it twice.
+    const outgoing = body.client_id ? { ...message, client_id: body.client_id } : message;
+    emitToRoom(req.params.roomId, "message:new", outgoing);
     // Global unread badges: notify every other member directly (even if they
     // have not opened this room), so counts update app-wide without each
     // client subscribing to every room channel.
@@ -176,7 +182,10 @@ messagesRouter.post(
       }
     }
     void pushNewMessage(message); // ports notify_push_on_message; never throws, so it can't fail the send
-    res.status(201).json(message);
+    // Grey double tick: in a DM, tell the sender the moment the other person's app has it.
+    const room = await prisma.rooms.findUnique({ where: { id: req.params.roomId }, select: { type: true } });
+    if (room?.type === "dm") void deliverToOnlineRecipients(req.params.roomId, req.userId!);
+    res.status(201).json(outgoing);
   })
 );
 

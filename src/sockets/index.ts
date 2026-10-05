@@ -7,6 +7,10 @@ import { hasCallPermission, CallType } from "@/lib/callPermissions";
 import { setPresence } from "@/lib/presence";
 import { verifyInvite, pushIncomingCall } from "@/lib/callPush";
 import { getAdminRole } from "@/lib/roles";
+import { rememberInvite, forgetInvite, bufferCallerSignal, pendingInvitesFor } from "@/lib/callInvites";
+import { markDeliveredOnConnect } from "@/lib/delivery";
+
+const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 interface AuthedSocket extends Socket {
   data: { userId: string };
@@ -69,6 +73,8 @@ export function initSockets(httpServer: HttpServer) {
     const prevCount = onlineCounts.get(userId) ?? 0;
     onlineCounts.set(userId, prevCount + 1);
     if (prevCount === 0) await setOnline(userId, true);
+    // Anything sent to this person while they were away has now reached them (grey double tick for the sender).
+    void markDeliveredOnConnect(userId);
 
     // --- Chat rooms ---
     // Only members get a room's live messages, typing and reactions (before, any signed-in user could join any room id).
@@ -126,10 +132,18 @@ export function initSockets(httpServer: HttpServer) {
           });
 
           if (!hasCallPermission(call.call_type as CallType, calleeProfile?.rank)) {
-            const declined = await prisma.callLogs
-              .update({ where: { id: call.id }, data: { status: "declined", duration_seconds: 0 } })
-              .catch(() => undefined);
-            if (declined) emitToRoom(call.room_id, "call:log", declined);
+            const changed = await prisma.callLogs
+              .updateMany({
+                where: { id: call.id, status: "ringing" },
+                data: { status: "declined", duration_seconds: 0, ended_at: new Date() },
+              })
+              .catch(() => ({ count: 0 }));
+            const declined = changed.count ? await prisma.callLogs.findUnique({ where: { id: call.id } }) : null;
+            if (declined) {
+              emitToRoom(call.room_id, "call:log", declined);
+              emitToUser(call.caller_id, "call:updated", declined);
+            }
+            forgetInvite(call.id);
             s.emit("call:signal", {
               callId: call.id,
               from: call.callee_id,
@@ -138,6 +152,18 @@ export function initSockets(httpServer: HttpServer) {
             return;
           }
 
+          // Kept for the ringing period so a callee who connects a moment later (tapping the push notification,
+          // coming back online) still gets it: see the "call:pending" handler below.
+          rememberInvite({
+            callId: call.id,
+            roomId: call.room_id,
+            callerId: userId,
+            calleeId: call.callee_id,
+            callType: call.call_type,
+            callerName: call.callerName,
+            callerAvatarUrl: call.callerAvatarUrl,
+            sdp: payload.sdp,
+          });
           getIo().to(`user:${call.callee_id}`).emit("call:invite", {
             callId: call.id,
             roomId: call.room_id,
@@ -155,7 +181,28 @@ export function initSockets(httpServer: HttpServer) {
     );
 
     s.on("call:signal", ({ callId, to, signal }: { callId: string; to: string; signal: unknown }) => {
+      if (typeof callId !== "string" || typeof to !== "string" || !UUID_RE.test(to)) return;
+      // The caller's network candidates (ICE) start flowing the instant the call is placed, long before a ringing
+      // callee taps Answer. Keep them so they aren't lost (see lib/callInvites.ts).
+      if ((signal as { type?: string } | null)?.type === "ice") bufferCallerSignal(callId, userId, to, signal);
       getIo().to(`user:${to}`).emit("call:signal", { callId, from: userId, signal });
+    });
+
+    // The client sends this once it is connected AND listening. Any call ringing for this user right now
+    // (placed while their app was closed, or while they were reconnecting) is replayed with its offer.
+    s.on("call:pending", () => {
+      for (const inv of pendingInvitesFor(userId)) {
+        s.emit("call:invite", {
+          callId: inv.callId,
+          roomId: inv.roomId,
+          callerId: inv.callerId,
+          callType: inv.callType,
+          callerName: inv.callerName,
+          callerAvatarUrl: inv.callerAvatarUrl,
+          sdp: inv.sdp,
+        });
+        for (const sig of inv.signals) s.emit("call:signal", { callId: inv.callId, from: sig.from, signal: sig.signal });
+      }
     });
 
     // --- Status/story reactions live-update channel ---

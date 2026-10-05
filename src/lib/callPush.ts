@@ -42,6 +42,7 @@ export async function verifyInvite(
   if (!call) return null;
   if (call.caller_id !== callerId || call.callee_id !== p.calleeId || call.room_id !== p.roomId) return null;
   if (call.call_type !== p.callType) return null;
+  if (call.status !== "ringing") return null; // already answered, declined, cancelled or timed out
   if (Date.now() - call.created_at.getTime() > INVITE_MAX_AGE_MS) return null;
   const caller = await prisma.profiles.findUnique({ where: { user_id: callerId }, select: { display_name: true, username: true, avatar_url: true } });
   return {
@@ -81,5 +82,28 @@ export async function pushCallEnded(call: { id: string; room_id: string; callee_
     title: "Call ended",
     body: "The call has ended",
     data: { kind: "call_cancelled", tag: `call-${call.id}`, callId: call.id, roomId: call.room_id },
+  });
+}
+
+/**
+ * "Missed voice call" notification for the callee: nobody picked up, or the caller hung up while it was still ringing.
+ * (Like WhatsApp, a call you didn't get to answer leaves a trace even if your phone was off.)
+ */
+export async function pushMissedCall(call: { id: string; room_id: string; caller_id: string; callee_id: string; call_type: string }) {
+  const caller = await prisma.profiles.findUnique({
+    where: { user_id: call.caller_id },
+    select: { display_name: true, username: true },
+  });
+  const name = caller?.display_name ?? caller?.username ?? "Someone";
+  await sendPush([call.callee_id], {
+    title: `Missed ${call.call_type} call`,
+    body: `${name} tried to call you`,
+    data: {
+      navigateTo: `/room/${call.room_id}`,
+      tag: `missed-${call.id}`,
+      kind: "missed_call",
+      callId: call.id,
+      roomId: call.room_id,
+    },
   });
 }

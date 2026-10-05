@@ -178,8 +178,11 @@ model CallLogs {
   status String
   duration_seconds Int @default(0)
   created_at DateTime @default(now()) @db.Timestamptz(6)
+  answered_at DateTime? @db.Timestamptz(6)
+  ended_at DateTime? @db.Timestamptz(6)
   @@index([callee_id, status])
   @@index([room_id, created_at])
+  @@index([status, created_at])
 
   @@map("call_logs")
 }
@@ -669,6 +672,7 @@ model RoomMembers {
   user_id String @db.Uuid
   role String @default("member")
   joined_at DateTime @default(now()) @db.Timestamptz(6)
+  last_delivered_at DateTime @default(now()) @db.Timestamptz(6)
   @@unique([room_id, user_id])
   @@index([room_id, user_id])
   @@index([user_id])

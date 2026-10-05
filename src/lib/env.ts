@@ -47,6 +47,18 @@ export const env = {
     subject: process.env.VAPID_SUBJECT ?? "mailto:support@4go.com.ng",
   },
 
+  // TURN relay for voice/video calls. Without one, calls between people on mobile data / strict networks often
+  // connect but carry no audio or video, because STUN alone can't get through carrier NAT.
+  // Either give a fixed username/credential (Metered, Twilio, ...) or a shared secret (your own coturn server,
+  // with `use-auth-secret`). TURN_URLS is a comma-separated list, e.g. turn:global.relay.metered.ca:80,turns:global.relay.metered.ca:443?transport=tcp
+  turn: {
+    urls: (process.env.TURN_URLS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    username: process.env.TURN_USERNAME ?? "",
+    credential: process.env.TURN_CREDENTIAL ?? "",
+    sharedSecret: process.env.TURN_SHARED_SECRET ?? "",
+    ttlSeconds: Number(process.env.TURN_TTL_SECONDS ?? 86400) || 86400,
+  },
+
   // How many reverse proxies sit between the internet and this server (Railway, Cloudflare, ...). Express needs
   // this to see the real visitor address: at 0 every visitor looks like the proxy. Too HIGH a number lets a
   // visitor fake their address, so set it to exactly the number of proxies; open /health/ip to check.

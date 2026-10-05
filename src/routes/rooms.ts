@@ -5,6 +5,7 @@ import { requireAuth, optionalAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { emitToRoom } from "@/sockets";
 import { createJoinRequest, reviewJoinRequest } from "@/lib/joinRequests";
+import { Prisma } from "@prisma/client";
 
 export const roomsRouter = Router();
 
@@ -92,6 +93,65 @@ roomsRouter.get(
       })
     );
     res.json(counts.filter((c) => c.unread_count > 0));
+  })
+);
+
+// Everything the DM list needs in ONE request: for each of my direct-message rooms, who the other person is, the
+// last message, how many I haven't read, the last finished call, and whether they've read/received my messages.
+// (The list used to open every chat and download 50 messages each, which got slower with every friend added.)
+roomsRouter.get(
+  "/dms/summary",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const me = req.userId!;
+    const mine = await prisma.roomMembers.findMany({ where: { user_id: me }, select: { room_id: true } });
+    if (!mine.length) return res.json([]);
+    const dms = await prisma.rooms.findMany({ where: { id: { in: mine.map((m) => m.room_id) }, type: "dm" }, select: { id: true } });
+    const ids = dms.map((d) => d.id);
+    if (!ids.length) return res.json([]);
+
+    const [peers, lastMessages, unread, lastCalls, peerReads] = await Promise.all([
+      prisma.roomMembers.findMany({
+        where: { room_id: { in: ids }, user_id: { not: me } },
+        select: { room_id: true, user_id: true, last_delivered_at: true },
+      }),
+      prisma.$queryRaw<{ id: string; room_id: string; sender_id: string; type: string; content: string | null; created_at: Date }[]>(Prisma.sql`
+        SELECT DISTINCT ON (room_id) id, room_id, sender_id, type, content, created_at
+          FROM messages
+         WHERE room_id = ANY(${ids}::uuid[])
+         ORDER BY room_id, created_at DESC`),
+      prisma.$queryRaw<{ room_id: string; unread: number }[]>(Prisma.sql`
+        SELECT m.room_id, count(*)::int AS unread
+          FROM messages m
+          LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ${me}::uuid
+         WHERE m.room_id = ANY(${ids}::uuid[])
+           AND m.sender_id <> ${me}::uuid
+           AND (rr.last_read_at IS NULL OR m.created_at > rr.last_read_at)
+         GROUP BY m.room_id`),
+      prisma.$queryRaw<{ id: string; room_id: string; caller_id: string; callee_id: string; call_type: string; status: string; duration_seconds: number; created_at: Date }[]>(Prisma.sql`
+        SELECT DISTINCT ON (room_id) id, room_id, caller_id, callee_id, call_type, status, duration_seconds, created_at
+          FROM call_logs
+         WHERE room_id = ANY(${ids}::uuid[]) AND status <> 'ringing'
+         ORDER BY room_id, created_at DESC`),
+      prisma.roomReads.findMany({ where: { room_id: { in: ids }, user_id: { not: me } }, select: { room_id: true, last_read_at: true } }),
+    ]);
+
+    const msgBy = new Map(lastMessages.map((m) => [m.room_id, m]));
+    const unreadBy = new Map(unread.map((u) => [u.room_id, u.unread]));
+    const callBy = new Map(lastCalls.map((c) => [c.room_id, c]));
+    const readBy = new Map(peerReads.map((r) => [r.room_id, r.last_read_at]));
+
+    res.json(
+      peers.map((p) => ({
+        room_id: p.room_id,
+        peer_id: p.user_id,
+        last_message: msgBy.get(p.room_id) ?? null,
+        last_call: callBy.get(p.room_id) ?? null,
+        unread: unreadBy.get(p.room_id) ?? 0,
+        peer_last_read_at: readBy.get(p.room_id) ?? null,
+        peer_last_delivered_at: p.last_delivered_at,
+      }))
+    );
   })
 );
 
@@ -269,7 +329,7 @@ roomsRouter.get(
     const profiles = ids.length
       ? await prisma.profiles.findMany({
           where: { user_id: { in: ids } },
-          select: { user_id: true, username: true, display_name: true, avatar_url: true, is_online: true },
+          select: { user_id: true, username: true, display_name: true, avatar_url: true, is_online: true, last_seen: true },
         })
       : [];
     const profileMap = new Map(profiles.map((p) => [p.user_id, p]));
@@ -322,6 +382,21 @@ roomsRouter.get(
     await assertRoomMember(req.params.roomId, req.userId!);
     const rows = await prisma.roomReads.findMany({ where: { room_id: req.params.roomId } });
     res.json(rows);
+  })
+);
+
+// Read AND delivered times for every member (the older /reads only has read times, and the native app depends on its shape).
+roomsRouter.get(
+  "/:roomId/receipts",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertRoomMember(req.params.roomId, req.userId!);
+    const [members, reads] = await Promise.all([
+      prisma.roomMembers.findMany({ where: { room_id: req.params.roomId }, select: { user_id: true, last_delivered_at: true } }),
+      prisma.roomReads.findMany({ where: { room_id: req.params.roomId }, select: { user_id: true, last_read_at: true } }),
+    ]);
+    const readBy = new Map(reads.map((r) => [r.user_id, r.last_read_at]));
+    res.json(members.map((m) => ({ user_id: m.user_id, last_read_at: readBy.get(m.user_id) ?? null, last_delivered_at: m.last_delivered_at })));
   })
 );
 
