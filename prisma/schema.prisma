@@ -404,10 +404,28 @@ model Messages {
   created_at DateTime @default(now()) @db.Timestamptz(6)
   edited_at DateTime? @db.Timestamptz(6)
   reply_to String? @db.Uuid
+  // "Delete for everyone": the row stays as a "This message was deleted" tombstone (content/media are wiped).
+  deleted_at DateTime? @db.Timestamptz(6)
+  // Copied into this chat from another one ("Forwarded" label).
+  forwarded Boolean @default(false)
   @@index([room_id, created_at])
   @@index([sender_id])
 
   @@map("messages")
+}
+
+// "Delete for me": hides one message from one person's view only. room_id is copied here so a chat can be
+// filtered with one cheap lookup (there are no foreign keys / joins in this schema).
+model MessageDeletions {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  message_id String @db.Uuid
+  user_id String @db.Uuid
+  room_id String @db.Uuid
+  deleted_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([message_id, user_id])
+  @@index([user_id, room_id])
+
+  @@map("message_deletions")
 }
 
 model ModerationReports {
