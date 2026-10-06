@@ -428,6 +428,23 @@ model MessageDeletions {
   @@map("message_deletions")
 }
 
+// Per-person chat settings (one row per person per room): pin to top, mute, archive, "clear chat".
+// cleared_at hides everything in the chat up to that moment for this person only.
+model ChatPrefs {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id String @db.Uuid
+  room_id String @db.Uuid
+  pinned_at DateTime? @db.Timestamptz(6)
+  muted_until DateTime? @db.Timestamptz(6)
+  archived Boolean @default(false)
+  cleared_at DateTime? @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([user_id, room_id])
+  @@index([room_id])
+
+  @@map("chat_prefs")
+}
+
 model ModerationReports {
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   reporter_id String @db.Uuid
