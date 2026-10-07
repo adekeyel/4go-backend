@@ -37,6 +37,24 @@ export async function applyCallTransition(callId: string, actorId: string | null
 }
 
 /**
+ * Called some seconds after a person's LAST connection drops (closed the tab, lost signal, phone died) and they
+ * haven't come back. Closes what they left open so the history is right:
+ *  - a call they were placing that nobody had picked up yet -> "cancelled" (the callee sees it as missed)
+ *  - a call that was connected -> ended, with the length measured by the server
+ * A call that is ringing FOR them is left alone: it keeps ringing through push and is marked missed at 45s.
+ */
+export async function endCallsLeftBehind(userId: string) {
+  const open = await prisma.callLogs.findMany({
+    where: { ended_at: null, status: { in: ["ringing", "answered"] }, OR: [{ caller_id: userId }, { callee_id: userId }] },
+    select: { id: true, status: true, caller_id: true },
+  });
+  for (const c of open) {
+    if (c.status === "answered") await applyCallTransition(c.id, userId, "ended");
+    else if (c.caller_id === userId) await applyCallTransition(c.id, userId, "cancelled");
+  }
+}
+
+/**
  * Every few seconds: any call still ringing after RING_TIMEOUT_MS is a missed call. Runs on the server, so it
  * works even when the callee's app is closed or offline. Also runs once at start-up, which clears calls that
  * were ringing when the server restarted.
@@ -53,6 +71,14 @@ export function startCallSweeper() {
         take: 100,
       });
       for (const c of stale) await applyCallTransition(c.id, null, "missed");
+
+      // Safety net: a connected call nobody ever closed (both apps died) shouldn't stay "in progress" for ever.
+      const stuck = await prisma.callLogs.findMany({
+        where: { status: "answered", ended_at: null, answered_at: { lt: new Date(Date.now() - 6 * 60 * 60 * 1000) } },
+        select: { id: true, caller_id: true },
+        take: 100,
+      });
+      for (const c of stuck) await applyCallTransition(c.id, c.caller_id, "ended");
     } catch (err) {
       console.error("[calls] sweeper failed:", (err as Error).message);
     } finally {

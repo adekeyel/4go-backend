@@ -1,3 +1,4 @@
+import { mutedUserIds } from "@/lib/chatPrefs";
 import webpush from "web-push";
 import { env } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
@@ -136,8 +137,11 @@ export async function pushNewMessage(m: MessageLike) {
     ]);
     if (!room || !members.length) return;
     const senderName = sender?.display_name ?? "Someone";
+    const muted = await mutedUserIds(m.room_id, members.map((x) => x.user_id));
+    const recipients = members.map((x) => x.user_id).filter((id) => !muted.has(id));
+    if (!recipients.length) return;
     await sendPush(
-      members.map((x) => x.user_id),
+      recipients,
       {
         title: room.type === "dm" ? senderName : `${senderName} in ${room.name}`,
         body: messagePreview(m),

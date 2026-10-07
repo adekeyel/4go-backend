@@ -90,20 +90,32 @@ export async function pushCallEnded(call: { id: string; room_id: string; callee_
  * (Like WhatsApp, a call you didn't get to answer leaves a trace even if your phone was off.)
  */
 export async function pushMissedCall(call: { id: string; room_id: string; caller_id: string; callee_id: string; call_type: string }) {
-  const caller = await prisma.profiles.findUnique({
-    where: { user_id: call.caller_id },
-    select: { display_name: true, username: true },
-  });
+  const [caller, recent] = await Promise.all([
+    prisma.profiles.findUnique({ where: { user_id: call.caller_id }, select: { display_name: true, username: true } }),
+    // Several misses from the same person in a row become ONE notification that updates ("3 missed calls"),
+    // instead of a pile of separate ones.
+    prisma.callLogs.count({
+      where: {
+        caller_id: call.caller_id,
+        callee_id: call.callee_id,
+        status: { in: ["missed", "cancelled"] },
+        duration_seconds: 0,
+        created_at: { gt: new Date(Date.now() - 24 * 3600 * 1000) },
+      },
+    }),
+  ]);
   const name = caller?.display_name ?? caller?.username ?? "Someone";
+  const many = recent > 1;
   await sendPush([call.callee_id], {
-    title: `Missed ${call.call_type} call`,
-    body: `${name} tried to call you`,
+    title: many ? `${recent} missed calls` : `Missed ${call.call_type} call`,
+    body: many ? `${name} tried to call you ${recent} times` : `${name} tried to call you`,
     data: {
       navigateTo: `/room/${call.room_id}`,
-      tag: `missed-${call.id}`,
+      tag: `missed-${call.caller_id}`, // same tag = the newer one replaces the older
       kind: "missed_call",
       callId: call.id,
       roomId: call.room_id,
+      callType: call.call_type, // lets the "Call back" button start the same kind of call
     },
   });
 }

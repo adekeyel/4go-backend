@@ -82,6 +82,8 @@ model VideoAds {
   mid_roll_at_seconds Int?
   min_video_seconds Int @default(30)
   target_page_ids String[] @default([]) @db.Uuid
+  // Also play in videos shared in chat rooms (room videos aren't tied to a page, so only for ads with no page targeting).
+  show_in_rooms Boolean @default(false)
   skippable Boolean @default(true)
   skip_after_seconds Int @default(5)
   starts_at DateTime? @db.Timestamptz(6)
@@ -183,8 +185,20 @@ model CallLogs {
   @@index([callee_id, status])
   @@index([room_id, created_at])
   @@index([status, created_at])
+  @@index([caller_id, created_at])
+  @@index([callee_id, created_at])
 
   @@map("call_logs")
+}
+
+// One row per person: when they last looked at their call history (clears the missed-call badge) and when they
+// last used "Clear call log" (older calls are hidden from their history).
+model CallHistoryState {
+  user_id String @id @db.Uuid
+  seen_at DateTime? @db.Timestamptz(6)
+  cleared_at DateTime? @db.Timestamptz(6)
+
+  @@map("call_history_state")
 }
 
 model CoinPurchases {

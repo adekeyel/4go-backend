@@ -9,17 +9,31 @@ import { assertCanSendToRoom } from "@/lib/roomMessages";
 import { pushNewMessage } from "@/lib/push";
 import { deleteMessagesCascade } from "@/lib/cleanup";
 import { deliverToOnlineRecipients } from "@/lib/delivery";
+import { canDeleteForEveryone } from "@/lib/messageRules";
+import { clearedAtFor, mutedUserIds, unarchiveOnNewMessage } from "@/lib/chatPrefs";
 
 export const messagesRouter = Router();
 messagesRouter.use(requireAuth);
+
+// Messages this person removed with "Delete for me" in this room (they never see them again).
+async function hiddenMessageIds(roomId: string, userId: string): Promise<string[]> {
+  const rows = await prisma.messageDeletions.findMany({ where: { room_id: roomId, user_id: userId }, select: { message_id: true } });
+  return rows.map((r) => r.message_id);
+}
 
 messagesRouter.get(
   "/room/:roomId",
   asyncHandler(async (req, res) => {
     await assertRoomMember(req.params.roomId, req.userId!);
     const before = typeof req.query.before === "string" ? new Date(req.query.before) : undefined;
+    const hidden = await hiddenMessageIds(req.params.roomId, req.userId!);
+    const floor = await clearedAtFor(req.params.roomId, req.userId!); // "Clear chat": nothing older than this is shown
     const messages = await prisma.messages.findMany({
-      where: { room_id: req.params.roomId, ...(before ? { created_at: { lt: before } } : {}) },
+      where: {
+        room_id: req.params.roomId,
+        ...(hidden.length ? { id: { notIn: hidden } } : {}),
+        ...(before || floor ? { created_at: { ...(before ? { lt: before } : {}), ...(floor ? { gt: floor } : {}) } } : {}),
+      },
       orderBy: { created_at: "desc" },
       take: 50,
     });
@@ -48,14 +62,18 @@ messagesRouter.get(
     await assertRoomMember(req.params.roomId, req.userId!);
     const target = await prisma.messages.findUnique({ where: { id: req.params.messageId } });
     if (!target || target.room_id !== req.params.roomId) throw new ApiError(404, "Message not found");
+    const hidden = await hiddenMessageIds(req.params.roomId, req.userId!);
+    const notHidden = hidden.length ? { id: { notIn: hidden } } : {};
+    const floorAt = await clearedAtFor(req.params.roomId, req.userId!);
+    const aboveFloor = floorAt ? { gt: floorAt } : {};
     const [before25, after25] = await Promise.all([
       prisma.messages.findMany({
-        where: { room_id: req.params.roomId, created_at: { lt: target.created_at } },
+        where: { room_id: req.params.roomId, ...notHidden, created_at: { lt: target.created_at, ...aboveFloor } },
         orderBy: { created_at: "desc" },
         take: 25,
       }),
       prisma.messages.findMany({
-        where: { room_id: req.params.roomId, created_at: { gte: target.created_at } },
+        where: { room_id: req.params.roomId, ...notHidden, created_at: { gte: target.created_at, ...aboveFloor } },
         orderBy: { created_at: "asc" },
         take: 25,
       }),
@@ -73,26 +91,33 @@ messagesRouter.get(
   asyncHandler(async (req, res) => {
     await assertRoomMember(req.params.roomId, req.userId!);
     const after = typeof req.query.after === "string" ? new Date(req.query.after) : null;
+    const hidden = await hiddenMessageIds(req.params.roomId, req.userId!);
+    const notHidden = hidden.length ? { id: { notIn: hidden } } : {};
+    const clearedAt = await clearedAtFor(req.params.roomId, req.userId!);
+    const aboveFloor = clearedAt ? { gt: clearedAt } : {};
+    // Unread starts after whichever is later: the last time they read, or the last time they cleared the chat.
+    const since = after && clearedAt ? (after > clearedAt ? after : clearedAt) : after ?? clearedAt;
 
-    if (after) {
+    if (since) {
+      // A message someone already deleted for everyone isn't "unread" any more.
       const firstUnread = await prisma.messages.findFirst({
-        where: { room_id: req.params.roomId, created_at: { gt: after }, sender_id: { not: req.userId! } },
+        where: { room_id: req.params.roomId, ...notHidden, deleted_at: null, created_at: { gt: since }, sender_id: { not: req.userId! } },
         orderBy: { created_at: "asc" },
       });
       if (firstUnread) {
         const [unreadMessages, olderCount] = await Promise.all([
           prisma.messages.findMany({
-            where: { room_id: req.params.roomId, created_at: { gte: firstUnread.created_at } },
+            where: { room_id: req.params.roomId, ...notHidden, created_at: { gte: firstUnread.created_at } },
             orderBy: { created_at: "asc" },
           }),
-          prisma.messages.count({ where: { room_id: req.params.roomId, created_at: { lt: firstUnread.created_at } } }),
+          prisma.messages.count({ where: { room_id: req.params.roomId, ...notHidden, created_at: { lt: firstUnread.created_at, ...aboveFloor } } }),
         ]);
         return res.json({ messages: unreadMessages, hasMore: olderCount > 0 });
       }
     }
 
     const latest = await prisma.messages.findMany({
-      where: { room_id: req.params.roomId },
+      where: { room_id: req.params.roomId, ...notHidden, ...(clearedAt ? { created_at: { gt: clearedAt } } : {}) },
       orderBy: { created_at: "desc" },
       take: 50,
     });
@@ -144,6 +169,8 @@ const sendSchema = z.object({
   media_url: z.string().url().optional(),
   duration: z.number().int().optional(),
   reply_to: z.string().uuid().optional(),
+  // True when this is a copy of a message from another chat (shows the "Forwarded" label).
+  forwarded: z.boolean().optional(),
   // Chosen by the sender's app so it can show the message instantly and match it up with the saved one.
   // Not stored; it is only echoed back.
   client_id: z.string().max(64).optional(),
@@ -166,6 +193,7 @@ messagesRouter.post(
         media_url: body.media_url ?? null,
         duration: body.duration ?? null,
         reply_to: body.reply_to ?? null,
+        forwarded: body.forwarded ?? false,
       },
     });
 
@@ -176,9 +204,12 @@ messagesRouter.post(
     // have not opened this room), so counts update app-wide without each
     // client subscribing to every room channel.
     const members = await prisma.roomMembers.findMany({ where: { room_id: req.params.roomId }, select: { user_id: true } });
+    await unarchiveOnNewMessage(req.params.roomId).catch(() => {}); // an archived chat pops back to the main list (unless muted)
+    // People who muted this chat still get the message and the unread badge, just no sound / banner / push.
+    const muted = await mutedUserIds(req.params.roomId, members.map((x) => x.user_id)).catch(() => new Set<string>());
     for (const m of members) {
       if (m.user_id !== req.userId!) {
-        emitToUser(m.user_id, "message:notify", { roomId: message.room_id, messageId: message.id, senderId: message.sender_id, createdAt: message.created_at, type: message.type, content: message.content ? message.content.slice(0, 200) : null });
+        emitToUser(m.user_id, "message:notify", { muted: muted.has(m.user_id), roomId: message.room_id, messageId: message.id, senderId: message.sender_id, createdAt: message.created_at, type: message.type, content: message.content ? message.content.slice(0, 200) : null });
       }
     }
     void pushNewMessage(message); // ports notify_push_on_message; never throws, so it can't fail the send
@@ -196,6 +227,7 @@ messagesRouter.patch(
     const { content } = editSchema.parse(req.body);
     const message = await prisma.messages.findUnique({ where: { id: req.params.messageId } });
     if (!message || message.sender_id !== req.userId!) throw new ApiError(404, "Message not found");
+    if (message.deleted_at) throw new ApiError(400, "This message was deleted");
 
     const updated = await prisma.messages.update({
       where: { id: message.id },
@@ -206,20 +238,50 @@ messagesRouter.patch(
   })
 );
 
-// Delete a message: the sender, or an admin of the room. (Before, ANY member could delete ANY message.)
-// Reactions, views, pins and mention notices go with it; moderators use DELETE /api/admin/messages/:id.
+// Delete a message, WhatsApp style. ?scope=me hides it from the caller's view only (any room member);
+// ?scope=everyone (the default) turns it into a "This message was deleted" tombstone for the whole chat:
+// the sender within DELETE_FOR_EVERYONE_WINDOW_MS, or a room admin at any time. Reactions, views, pins and
+// mention notices go with it; moderators use DELETE /api/admin/messages/:id for a hard delete.
 messagesRouter.delete(
   "/:messageId",
   asyncHandler(async (req, res) => {
     const id = z.string().uuid().parse(req.params.messageId);
+    const scope = z.enum(["me", "everyone"]).default("everyone").parse(req.query.scope ?? undefined);
     const message = await prisma.messages.findUnique({ where: { id } });
     if (!message) return res.status(204).send();
-    if (message.sender_id !== req.userId!) {
-      const member = await assertRoomMember(message.room_id, req.userId!);
-      if (member.role !== "admin") throw new ApiError(403, "Only the sender or a room admin can delete this message");
+    const member = await assertRoomMember(message.room_id, req.userId!);
+
+    if (scope === "me") {
+      await prisma.messageDeletions.upsert({
+        where: { message_id_user_id: { message_id: id, user_id: req.userId! } },
+        create: { message_id: id, user_id: req.userId!, room_id: message.room_id },
+        update: {},
+      });
+      // Keeps the person's other open tabs/devices in step.
+      emitToUser(req.userId!, "message:hidden", { id, roomId: message.room_id });
+      return res.status(204).send();
     }
-    await prisma.$transaction((tx) => deleteMessagesCascade(tx, [id]));
-    emitToRoom(message.room_id, "message:delete", { id });
+
+    if (message.deleted_at) return res.status(204).send(); // already gone for everyone
+    const isSender = message.sender_id === req.userId!;
+    const isRoomAdmin = member.role === "admin";
+    if (!isSender && !isRoomAdmin) throw new ApiError(403, "Only the sender or a room admin can delete this message for everyone");
+    if (!canDeleteForEveryone({ isSender, isRoomAdmin, createdAt: message.created_at })) {
+      throw new ApiError(403, "It's too late to delete this message for everyone. You can still delete it for yourself.");
+    }
+
+    const deletedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.messageReactions.deleteMany({ where: { message_id: id } });
+      await tx.messageViews.deleteMany({ where: { message_id: id } });
+      await tx.pinnedMessages.deleteMany({ where: { message_id: id } });
+      await tx.mentions.deleteMany({ where: { source_type: "message", source_id: id } });
+      await tx.messages.update({
+        where: { id },
+        data: { deleted_at: deletedAt, content: null, media_url: null, duration: null, edited_at: null },
+      });
+    });
+    emitToRoom(message.room_id, "message:revoked", { id, room_id: message.room_id, deleted_at: deletedAt.toISOString() });
     res.status(204).send();
   })
 );
@@ -233,6 +295,7 @@ messagesRouter.post(
     const { emoji } = reactSchema.parse(req.body);
     const message = await prisma.messages.findUnique({ where: { id: req.params.messageId } });
     if (!message) throw new ApiError(404, "Message not found");
+    if (message.deleted_at) throw new ApiError(400, "This message was deleted");
     await assertRoomMember(message.room_id, req.userId!);
 
     const reaction = await prisma.messageReactions.upsert({

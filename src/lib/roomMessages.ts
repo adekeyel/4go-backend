@@ -1,3 +1,4 @@
+import { mutedUserIds } from "@/lib/chatPrefs";
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/middleware/errorHandler";
 import { emitToRoom, emitToUser } from "@/sockets";
@@ -54,9 +55,11 @@ export async function sendRoomMessage(
 
   emitToRoom(roomId, "message:new", message);
   const members = await prisma.roomMembers.findMany({ where: { room_id: roomId }, select: { user_id: true } });
+  const muted = await mutedUserIds(roomId, members.map((x) => x.user_id)).catch(() => new Set<string>());
   for (const m of members) {
     if (m.user_id !== senderId) {
       emitToUser(m.user_id, "message:notify", {
+        muted: muted.has(m.user_id),
         roomId,
         messageId: message.id,
         senderId,

@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
 import { assertRoomMember } from "./rooms";
 import { hasCallPermission } from "@/lib/callPermissions";
-import { emitToRoom } from "@/sockets";
+import { emitToRoom, emitToUser } from "@/sockets";
 import { isBlockedBetween } from "@/lib/social";
 import { applyCallTransition } from "@/lib/callLifecycle";
 import { buildIceServers } from "@/lib/iceServers";
@@ -87,21 +88,110 @@ callsRouter.patch(
 );
 
 // Calls the current user didn't get to answer: nobody picked up (missed) or the caller hung up first (cancelled).
-// Optionally only those after `since`. Drives the "missed calls" badge.
+// A missed call counts as "not seen yet" until the person has either opened that chat or looked at their call
+// history (POST /calls/seen) after it happened. That is what drives the badges, so they clear when you look,
+// not at some unrelated moment. `since` (older apps) is only used for people who have never opened the history.
 callsRouter.get(
   "/missed",
   asyncHandler(async (req, res) => {
-    const since = typeof req.query.since === "string" ? new Date(req.query.since) : undefined;
-    const calls = await prisma.callLogs.findMany({
-      where: {
-        callee_id: req.userId!,
-        status: { in: ["missed", "cancelled"] },
-        duration_seconds: 0,
-        ...(since && !Number.isNaN(since.getTime()) ? { created_at: { gt: since } } : {}),
-      },
-      select: { id: true, room_id: true, created_at: true },
-    });
+    const me = req.userId!;
+    const sinceParam = typeof req.query.since === "string" ? new Date(req.query.since) : null;
+    const fallback = sinceParam && !Number.isNaN(sinceParam.getTime()) ? sinceParam : new Date(Date.now() - 7 * 24 * 3600 * 1000);
+    const calls = await prisma.$queryRaw<{ id: string; room_id: string; created_at: Date }[]>(Prisma.sql`
+      SELECT c.id, c.room_id, c.created_at
+        FROM call_logs c
+        LEFT JOIN room_reads rr ON rr.room_id = c.room_id AND rr.user_id = ${me}::uuid
+        LEFT JOIN call_history_state s ON s.user_id = ${me}::uuid
+       WHERE c.callee_id = ${me}::uuid
+         AND c.status IN ('missed', 'cancelled')
+         AND c.duration_seconds = 0
+         AND c.created_at > COALESCE(GREATEST(s.seen_at, s.cleared_at), ${fallback}::timestamptz)
+         AND (rr.last_read_at IS NULL OR c.created_at > rr.last_read_at)
+       ORDER BY c.created_at DESC
+       LIMIT 200`);
     res.json(calls);
+  })
+);
+
+// "I've looked at my call history": clears the missed-call badge for everything up to now.
+callsRouter.post(
+  "/seen",
+  asyncHandler(async (req, res) => {
+    const now = new Date();
+    await prisma.callHistoryState.upsert({
+      where: { user_id: req.userId! },
+      create: { user_id: req.userId!, seen_at: now },
+      update: { seen_at: now },
+    });
+    emitToUser(req.userId!, "calls:seen", { at: now.toISOString() }); // other tabs/devices update their badge
+    res.status(204).send();
+  })
+);
+
+// "Clear call log": hides everything up to now from THIS person's history (the other person keeps theirs).
+callsRouter.post(
+  "/clear",
+  asyncHandler(async (req, res) => {
+    const now = new Date();
+    await prisma.callHistoryState.upsert({
+      where: { user_id: req.userId! },
+      create: { user_id: req.userId!, seen_at: now, cleared_at: now },
+      update: { seen_at: now, cleared_at: now },
+    });
+    emitToUser(req.userId!, "calls:seen", { at: now.toISOString(), cleared: true });
+    res.status(204).send();
+  })
+);
+
+// My call history across every chat, newest first: calls I placed, received, missed. Ringing calls aren't included
+// (they appear once they finish). Each entry carries the OTHER person's name and photo.
+callsRouter.get(
+  "/history",
+  asyncHandler(async (req, res) => {
+    const me = req.userId!;
+    const { before, limit } = z
+      .object({ before: z.string().datetime().optional(), limit: z.coerce.number().int().min(1).max(100).default(40) })
+      .parse(req.query);
+    const state = await prisma.callHistoryState.findUnique({ where: { user_id: me }, select: { cleared_at: true } });
+    const createdAt: { gt?: Date; lt?: Date } = {};
+    if (state?.cleared_at) createdAt.gt = state.cleared_at;
+    if (before) createdAt.lt = new Date(before);
+
+    const rows = await prisma.callLogs.findMany({
+      where: {
+        OR: [{ caller_id: me }, { callee_id: me }],
+        status: { not: "ringing" },
+        ...(createdAt.gt || createdAt.lt ? { created_at: createdAt } : {}),
+      },
+      orderBy: { created_at: "desc" },
+      take: limit + 1,
+    });
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+
+    const peerIds = [...new Set(page.map((c) => (c.caller_id === me ? c.callee_id : c.caller_id)))];
+    const profiles = peerIds.length
+      ? await prisma.profiles.findMany({ where: { user_id: { in: peerIds } }, select: { user_id: true, display_name: true, username: true, avatar_url: true } })
+      : [];
+    const byId = new Map(profiles.map((p) => [p.user_id, p]));
+
+    res.json({
+      hasMore,
+      calls: page.map((c) => {
+        const peerId = c.caller_id === me ? c.callee_id : c.caller_id;
+        const peer = byId.get(peerId);
+        return {
+          id: c.id,
+          room_id: c.room_id,
+          direction: c.caller_id === me ? "outgoing" : "incoming",
+          call_type: c.call_type,
+          status: c.status,
+          duration_seconds: c.duration_seconds,
+          created_at: c.created_at,
+          peer: { user_id: peerId, display_name: peer?.display_name ?? null, username: peer?.username ?? null, avatar_url: peer?.avatar_url ?? null },
+        };
+      }),
+    });
   })
 );
 

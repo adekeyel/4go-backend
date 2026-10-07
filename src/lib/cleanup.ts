@@ -8,6 +8,7 @@ export async function deleteMessagesCascade(tx: Tx, messageIds: string[]) {
   if (!messageIds.length) return 0;
   await tx.messageReactions.deleteMany({ where: { message_id: { in: messageIds } } });
   await tx.messageViews.deleteMany({ where: { message_id: { in: messageIds } } });
+  await tx.messageDeletions.deleteMany({ where: { message_id: { in: messageIds } } });
   await tx.pinnedMessages.deleteMany({ where: { message_id: { in: messageIds } } });
   await tx.mentions.deleteMany({ where: { source_type: "message", source_id: { in: messageIds } } });
   await tx.giftTransactions.updateMany({ where: { message_id: { in: messageIds } }, data: { message_id: null } });
@@ -24,6 +25,7 @@ export async function deleteRoomCascade(tx: Tx, roomId: string) {
   await tx.roomReads.deleteMany({ where: { room_id: roomId } });
   await tx.roomJoinRequests.deleteMany({ where: { room_id: roomId } });
   await tx.mutedMembers.deleteMany({ where: { room_id: roomId } });
+  await tx.chatPrefs.deleteMany({ where: { room_id: roomId } });
   await tx.pinnedMessages.deleteMany({ where: { room_id: roomId } });
   await tx.callLogs.deleteMany({ where: { room_id: roomId } });
   await tx.giftTransactions.updateMany({ where: { room_id: roomId }, data: { room_id: null } });

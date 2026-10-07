@@ -174,6 +174,10 @@ export function initSockets(httpServer: HttpServer) {
             sdp: payload.sdp,
           });
           void pushIncomingCall(call, Boolean(payload.group)); // rings a locked/closed phone; once per call
+          // Tell the caller whether the other person's app is reachable right now ("Ringing…") or only the push
+          // notification can reach them ("Calling…"), like WhatsApp's two states.
+          const reachable = (await getIo().in(`user:${call.callee_id}`).fetchSockets()).length > 0;
+          s.emit("call:ringing", { callId: call.id, reachable });
         } catch (err) {
           console.error("[socket] call:invite failed:", (err as Error).message);
         }
@@ -202,6 +206,7 @@ export function initSockets(httpServer: HttpServer) {
           sdp: inv.sdp,
         });
         for (const sig of inv.signals) s.emit("call:signal", { callId: inv.callId, from: sig.from, signal: sig.signal });
+        getIo().to(`user:${inv.callerId}`).emit("call:ringing", { callId: inv.callId, reachable: true }); // their app just came online
       }
     });
 
@@ -229,6 +234,13 @@ export function initSockets(httpServer: HttpServer) {
       if (count <= 0) {
         onlineCounts.delete(userId);
         await setOnline(userId, false);
+        // If they don't come back within a moment, close whatever call they left open (tab closed, signal lost).
+        setTimeout(() => {
+          if (onlineCounts.has(userId)) return;
+          void import("@/lib/callLifecycle")
+            .then((m) => m.endCallsLeftBehind(userId))
+            .catch((err) => console.error("[calls] cleanup after disconnect failed:", (err as Error).message));
+        }, 25_000).unref();
       } else {
         onlineCounts.set(userId, count);
       }

@@ -3,7 +3,8 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, optionalAuth } from "@/middleware/auth";
 import { asyncHandler, ApiError } from "@/middleware/errorHandler";
-import { emitToRoom } from "@/sockets";
+import { emitToRoom, emitToUser } from "@/sockets";
+import { MAX_PINNED_CHATS, MUTE_FOREVER } from "@/lib/chatPrefs";
 import { createJoinRequest, reviewJoinRequest } from "@/lib/joinRequests";
 import { Prisma } from "@prisma/client";
 
@@ -65,6 +66,56 @@ roomsRouter.get(
   })
 );
 
+// The rooms I'm in (not DMs), with everything the Rooms list needs in one request: member count, the last message
+// (as I would see it: not what I deleted for myself, nothing before "Clear chat") and my pin / mute / archive settings.
+roomsRouter.get(
+  "/mine/details",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const me = req.userId!;
+    const memberships = await prisma.roomMembers.findMany({ where: { user_id: me }, select: { room_id: true } });
+    const ids = memberships.map((m) => m.room_id);
+    if (!ids.length) return res.json([]);
+
+    const [rooms, counts, lastMessages, prefRows] = await Promise.all([
+      prisma.rooms.findMany({ where: { id: { in: ids }, type: { not: "dm" }, is_active: true } }),
+      prisma.roomMembers.groupBy({ by: ["room_id"], where: { room_id: { in: ids } }, _count: { room_id: true } }),
+      prisma.$queryRaw<{ room_id: string; sender_id: string; type: string; content: string | null; created_at: Date; deleted_at: Date | null }[]>(Prisma.sql`
+        SELECT DISTINCT ON (m.room_id) m.room_id, m.sender_id, m.type, m.content, m.created_at, m.deleted_at
+          FROM messages m
+          LEFT JOIN chat_prefs cp ON cp.room_id = m.room_id AND cp.user_id = ${me}::uuid
+         WHERE m.room_id = ANY(${ids}::uuid[])
+           AND (cp.cleared_at IS NULL OR m.created_at > cp.cleared_at)
+           AND NOT EXISTS (SELECT 1 FROM message_deletions d WHERE d.message_id = m.id AND d.user_id = ${me}::uuid)
+         ORDER BY m.room_id, m.created_at DESC`),
+      prisma.chatPrefs.findMany({ where: { user_id: me, room_id: { in: ids } } }),
+    ]);
+
+    const senderIds = [...new Set(lastMessages.map((m) => m.sender_id))];
+    const senders = senderIds.length
+      ? await prisma.profiles.findMany({ where: { user_id: { in: senderIds } }, select: { user_id: true, display_name: true, username: true } })
+      : [];
+    const senderName = new Map(senders.map((p) => [p.user_id, p.display_name || p.username || "Someone"]));
+    const countBy = new Map(counts.map((c) => [c.room_id, c._count.room_id]));
+    const lastBy = new Map(lastMessages.map((m) => [m.room_id, m]));
+    const prefBy = new Map(prefRows.map((p) => [p.room_id, p]));
+
+    res.json(
+      rooms.map((r) => {
+        const last = lastBy.get(r.id);
+        return {
+          ...r,
+          member_count: countBy.get(r.id) ?? 0,
+          last_message: last
+            ? { sender_id: last.sender_id, sender_name: last.sender_id === me ? "You" : senderName.get(last.sender_id) ?? "Someone", type: last.type, content: last.content, created_at: last.created_at, deleted_at: last.deleted_at }
+            : null,
+          ...prefsView(prefBy.get(r.id)),
+        };
+      })
+    );
+  })
+);
+
 // Unread message count per room for the current user (replaces the old
 // get_unread_counts RPC): messages from others created after the user's
 // last_read_at for that room (or all of them if they've never opened it).
@@ -78,14 +129,20 @@ roomsRouter.get(
 
     const reads = await prisma.roomReads.findMany({ where: { user_id: req.userId!, room_id: { in: roomIds } } });
     const readMap = new Map(reads.map((r) => [r.room_id, r.last_read_at]));
+    const prefs = await prisma.chatPrefs.findMany({ where: { user_id: req.userId!, room_id: { in: roomIds }, cleared_at: { not: null } }, select: { room_id: true, cleared_at: true } });
+    const clearedMap = new Map(prefs.map((p) => [p.room_id, p.cleared_at as Date]));
 
     const counts = await Promise.all(
       roomIds.map(async (room_id) => {
-        const last = readMap.get(room_id);
+        // Unread starts after the later of: last time they read it, last time they cleared the chat.
+        const read = readMap.get(room_id);
+        const cleared = clearedMap.get(room_id);
+        const last = read && cleared ? (read > cleared ? read : cleared) : read ?? cleared;
         const unread_count = await prisma.messages.count({
           where: {
             room_id,
             sender_id: { not: req.userId! },
+            deleted_at: null, // a message deleted for everyone no longer counts as unread
             ...(last ? { created_at: { gt: last } } : {}),
           },
         });
@@ -93,6 +150,102 @@ roomsRouter.get(
       })
     );
     res.json(counts.filter((c) => c.unread_count > 0));
+  })
+);
+
+// ---- Per-person chat settings: pin, mute, archive, clear chat -------------------------------------------------
+type PrefsRow = { pinned_at: Date | null; muted_until: Date | null; archived: boolean; cleared_at: Date | null } | null | undefined;
+
+/** What the app needs to know about a chat's settings. "muted" is true only while the mute is still running. */
+function prefsView(row: PrefsRow) {
+  const now = Date.now();
+  const mutedUntil = row?.muted_until && row.muted_until.getTime() > now ? row.muted_until : null;
+  return {
+    pinned_at: row?.pinned_at ?? null,
+    muted_until: mutedUntil,
+    archived: row?.archived ?? false,
+    cleared_at: row?.cleared_at ?? null,
+  };
+}
+
+const MUTE_DURATIONS_MS = { "8h": 8 * 3600 * 1000, "1w": 7 * 24 * 3600 * 1000 } as const;
+
+const prefsSchema = z.object({
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+  muted: z.enum(["off", "8h", "1w", "forever"]).optional(),
+});
+
+roomsRouter.get(
+  "/prefs",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.chatPrefs.findMany({ where: { user_id: req.userId! } });
+    res.json(rows.map((r) => ({ room_id: r.room_id, ...prefsView(r) })));
+  })
+);
+
+roomsRouter.put(
+  "/:roomId/prefs",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const roomId = z.string().uuid().parse(req.params.roomId);
+    const body = prefsSchema.parse(req.body);
+    await assertRoomMember(roomId, req.userId!);
+
+    const data: { pinned_at?: Date | null; muted_until?: Date | null; archived?: boolean; updated_at: Date } = { updated_at: new Date() };
+    if (body.pinned !== undefined) {
+      if (body.pinned) {
+        // The limit applies per list: up to 3 pinned DMs AND up to 3 pinned rooms (they're shown in separate lists).
+        const thisRoom = await prisma.rooms.findUnique({ where: { id: roomId }, select: { type: true } });
+        const thisIsDm = thisRoom?.type === "dm";
+        const pinnedRows = await prisma.chatPrefs.findMany({ where: { user_id: req.userId!, pinned_at: { not: null }, NOT: { room_id: roomId } }, select: { room_id: true } });
+        const pinnedRooms = pinnedRows.length
+          ? await prisma.rooms.findMany({ where: { id: { in: pinnedRows.map((r) => r.room_id) } }, select: { type: true } })
+          : [];
+        const sameKind = pinnedRooms.filter((r) => (r.type === "dm") === thisIsDm).length;
+        if (sameKind >= MAX_PINNED_CHATS) throw new ApiError(400, `You can only pin up to ${MAX_PINNED_CHATS} ${thisIsDm ? "chats" : "rooms"}`);
+        data.pinned_at = new Date();
+      } else {
+        data.pinned_at = null;
+      }
+    }
+    if (body.archived !== undefined) {
+      data.archived = body.archived;
+      if (body.archived) data.pinned_at = null; // like WhatsApp: archiving unpins
+    }
+    if (body.muted !== undefined) {
+      data.muted_until = body.muted === "off" ? null : body.muted === "forever" ? MUTE_FOREVER : new Date(Date.now() + MUTE_DURATIONS_MS[body.muted]);
+    }
+
+    const row = await prisma.chatPrefs.upsert({
+      where: { user_id_room_id: { user_id: req.userId!, room_id: roomId } },
+      create: { user_id: req.userId!, room_id: roomId, ...data },
+      update: data,
+    });
+    const view = { room_id: roomId, ...prefsView(row) };
+    emitToUser(req.userId!, "chat:prefs", view); // keeps the person's other tabs/devices in step
+    res.json(view);
+  })
+);
+
+// "Clear chat": hides everything up to now from this person's view only. The other person keeps their history.
+roomsRouter.post(
+  "/:roomId/clear",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const roomId = z.string().uuid().parse(req.params.roomId);
+    await assertRoomMember(roomId, req.userId!);
+    const now = new Date();
+    const row = await prisma.chatPrefs.upsert({
+      where: { user_id_room_id: { user_id: req.userId!, room_id: roomId } },
+      create: { user_id: req.userId!, room_id: roomId, cleared_at: now },
+      update: { cleared_at: now, updated_at: now },
+    });
+    const view = { room_id: roomId, ...prefsView(row) };
+    emitToUser(req.userId!, "chat:prefs", view);
+    emitToUser(req.userId!, "chat:cleared", { roomId, clearedAt: now.toISOString() });
+    res.json(view);
   })
 );
 
@@ -110,31 +263,42 @@ roomsRouter.get(
     const ids = dms.map((d) => d.id);
     if (!ids.length) return res.json([]);
 
-    const [peers, lastMessages, unread, lastCalls, peerReads] = await Promise.all([
+    const [peers, lastMessages, unread, lastCalls, peerReads, prefRows] = await Promise.all([
       prisma.roomMembers.findMany({
         where: { room_id: { in: ids }, user_id: { not: me } },
         select: { room_id: true, user_id: true, last_delivered_at: true },
       }),
-      prisma.$queryRaw<{ id: string; room_id: string; sender_id: string; type: string; content: string | null; created_at: Date }[]>(Prisma.sql`
-        SELECT DISTINCT ON (room_id) id, room_id, sender_id, type, content, created_at
-          FROM messages
-         WHERE room_id = ANY(${ids}::uuid[])
-         ORDER BY room_id, created_at DESC`),
+      prisma.$queryRaw<{ id: string; room_id: string; sender_id: string; type: string; content: string | null; created_at: Date; deleted_at: Date | null }[]>(Prisma.sql`
+        SELECT DISTINCT ON (m.room_id) m.id, m.room_id, m.sender_id, m.type, m.content, m.created_at, m.deleted_at
+          FROM messages m
+          LEFT JOIN chat_prefs cp ON cp.room_id = m.room_id AND cp.user_id = ${me}::uuid
+         WHERE m.room_id = ANY(${ids}::uuid[])
+           AND (cp.cleared_at IS NULL OR m.created_at > cp.cleared_at)
+           AND NOT EXISTS (SELECT 1 FROM message_deletions d WHERE d.message_id = m.id AND d.user_id = ${me}::uuid)
+         ORDER BY m.room_id, m.created_at DESC`),
       prisma.$queryRaw<{ room_id: string; unread: number }[]>(Prisma.sql`
         SELECT m.room_id, count(*)::int AS unread
           FROM messages m
           LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = ${me}::uuid
+          LEFT JOIN chat_prefs cp ON cp.room_id = m.room_id AND cp.user_id = ${me}::uuid
          WHERE m.room_id = ANY(${ids}::uuid[])
            AND m.sender_id <> ${me}::uuid
+           AND (cp.cleared_at IS NULL OR m.created_at > cp.cleared_at)
+           AND m.deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM message_deletions d WHERE d.message_id = m.id AND d.user_id = ${me}::uuid)
            AND (rr.last_read_at IS NULL OR m.created_at > rr.last_read_at)
          GROUP BY m.room_id`),
       prisma.$queryRaw<{ id: string; room_id: string; caller_id: string; callee_id: string; call_type: string; status: string; duration_seconds: number; created_at: Date }[]>(Prisma.sql`
-        SELECT DISTINCT ON (room_id) id, room_id, caller_id, callee_id, call_type, status, duration_seconds, created_at
-          FROM call_logs
-         WHERE room_id = ANY(${ids}::uuid[]) AND status <> 'ringing'
-         ORDER BY room_id, created_at DESC`),
+        SELECT DISTINCT ON (c.room_id) c.id, c.room_id, c.caller_id, c.callee_id, c.call_type, c.status, c.duration_seconds, c.created_at
+          FROM call_logs c
+          LEFT JOIN chat_prefs cp ON cp.room_id = c.room_id AND cp.user_id = ${me}::uuid
+         WHERE c.room_id = ANY(${ids}::uuid[]) AND c.status <> 'ringing'
+           AND (cp.cleared_at IS NULL OR c.created_at > cp.cleared_at)
+         ORDER BY c.room_id, c.created_at DESC`),
       prisma.roomReads.findMany({ where: { room_id: { in: ids }, user_id: { not: me } }, select: { room_id: true, last_read_at: true } }),
+      prisma.chatPrefs.findMany({ where: { room_id: { in: ids }, user_id: me } }),
     ]);
+    const prefBy = new Map(prefRows.map((p) => [p.room_id, p]));
 
     const msgBy = new Map(lastMessages.map((m) => [m.room_id, m]));
     const unreadBy = new Map(unread.map((u) => [u.room_id, u.unread]));
@@ -150,6 +314,7 @@ roomsRouter.get(
         unread: unreadBy.get(p.room_id) ?? 0,
         peer_last_read_at: readBy.get(p.room_id) ?? null,
         peer_last_delivered_at: p.last_delivered_at,
+        ...prefsView(prefBy.get(p.room_id)),
       }))
     );
   })

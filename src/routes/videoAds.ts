@@ -48,28 +48,50 @@ const staff = [requireAuth, requireRole("super_admin", "moderator")];
 // the browser's loaded metadata). The page comes from the post itself, not from the caller, so page targeting
 // can't be spoofed and only genuine page-post videos ever get ads. Nothing is counted here: the player
 // reports a view only when the ad actually starts playing (see the events route below).
-const serveQuery = z.object({
-  post_id: uuid,
-  duration: z.coerce.number().min(0).max(86_400),
-});
+// Room videos work the same way but start from the chat message (message_id): only a real, undeleted video
+// message in a room (not a DM) that the viewer belongs to can get ads, and only ads switched on for rooms.
+const serveQuery = z
+  .object({
+    post_id: uuid.optional(),
+    message_id: uuid.optional(),
+    duration: z.coerce.number().min(0).max(86_400),
+  })
+  .refine((q) => Boolean(q.post_id) !== Boolean(q.message_id), "Send either post_id or message_id");
 
 videoAdsRouter.get(
   "/serve",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const { post_id, duration } = serveQuery.parse(req.query);
+    const { post_id, message_id, duration } = serveQuery.parse(req.query);
     res.set("Cache-Control", "no-store"); // the pick is random per request
     if (!serveLimiter.allow(viewerKey(req), req.userId ? SERVE_MAX_USER : SERVE_MAX_GUEST)) return res.json({ ads: [] });
 
-    const post = await prisma.pagePosts.findUnique({ where: { id: post_id }, select: { page_id: true, media_type: true } });
-    if (!post || post.media_type !== "video") return res.json({ ads: [] });
+    // What is being watched: a page post (targeted by its page) or a room video (targeted at "rooms").
+    let subjectId: string;
+    let pageId: string | null = null;
+    if (post_id) {
+      const post = await prisma.pagePosts.findUnique({ where: { id: post_id }, select: { page_id: true, media_type: true } });
+      if (!post || post.media_type !== "video") return res.json({ ads: [] });
+      subjectId = post_id;
+      pageId = post.page_id;
+    } else {
+      if (!req.userId) return res.json({ ads: [] }); // chat rooms are for signed-in members
+      const msg = await prisma.messages.findUnique({ where: { id: message_id! }, select: { room_id: true, type: true, deleted_at: true } });
+      if (!msg || msg.type !== "video" || msg.deleted_at) return res.json({ ads: [] });
+      const [room, member] = await Promise.all([
+        prisma.rooms.findUnique({ where: { id: msg.room_id }, select: { type: true } }),
+        prisma.roomMembers.findFirst({ where: { room_id: msg.room_id, user_id: req.userId }, select: { user_id: true } }),
+      ]);
+      if (!room || room.type === "dm" || !member) return res.json({ ads: [] }); // no ads in private 1:1 chats
+      subjectId = message_id!;
+    }
 
     // Premium members don't see ads. Only the viewer matters, not who posted the video. Checked before any ad is
     // picked, so no token is issued and nothing is ever counted for them.
     if (!(await viewerSeesAds(req.userId, isPremium))) return res.json({ ads: [] });
 
     const now = new Date();
-    // Status, campaign window and page targeting are filtered in the database. The "longer than N seconds"
+    // Status, campaign window and targeting are filtered in the database. The "longer than N seconds"
     // check happens in selectAds, because Prisma won't compare a whole-number column to a fractional length.
     const candidates = await prisma.videoAds.findMany({
       where: {
@@ -77,7 +99,9 @@ videoAdsRouter.get(
         AND: [
           { OR: [{ starts_at: null }, { starts_at: { lte: now } }] },
           { OR: [{ ends_at: null }, { ends_at: { gt: now } }] },
-          { OR: [{ target_page_ids: { isEmpty: true } }, { target_page_ids: { has: post.page_id } }] },
+          pageId
+            ? { OR: [{ target_page_ids: { isEmpty: true } }, { target_page_ids: { has: pageId } }] }
+            : { show_in_rooms: true, target_page_ids: { isEmpty: true } },
         ],
       },
       select: {
@@ -89,7 +113,7 @@ videoAdsRouter.get(
     // Only what the player needs: no budget, counters, targeting or admin fields.
     const ads = selectAds(candidates, duration).map(({ min_video_seconds: _min, ...ad }) => ({
       ...ad,
-      token: tokens.issue(ad.id, post_id), // lets the player report this ad's view / completion / click
+      token: tokens.issue(ad.id, subjectId), // lets the player report this ad's view / completion / click
     }));
     res.json({ ads });
   })
@@ -169,6 +193,8 @@ const fields = z.object({
   min_video_seconds: z.number().int().min(0).max(86_400).default(30),
   // Empty = videos on every page.
   target_page_ids: z.array(uuid).max(200).default([]),
+  // Also play inside videos shared in chat rooms. Only allowed for ads that aren't aimed at specific pages.
+  show_in_rooms: z.boolean().default(false),
   skippable: z.boolean().default(true),
   skip_after_seconds: z.number().int().min(0).max(60).default(5),
   // When the campaign runs. null = no limit on that side.
@@ -181,7 +207,7 @@ const patchSchema = fields.partial();
 
 /** Rules that span several fields. Run on the full, merged ad so a PATCH can't produce an invalid combination. */
 // `placement` is a plain string here: on PATCH the merged ad comes from the database, which types it as string, not the enum.
-function checkRules(ad: { placement: string; mid_roll_at_seconds?: number | null; starts_at?: Date | null; ends_at?: Date | null }) {
+function checkRules(ad: { placement: string; mid_roll_at_seconds?: number | null; starts_at?: Date | null; ends_at?: Date | null; show_in_rooms?: boolean; target_page_ids?: string[] }) {
   if (ad.placement === "mid_roll" && ad.mid_roll_at_seconds == null) {
     throw new ApiError(400, "A mid-roll ad needs the time (in seconds) it should play at");
   }
@@ -190,6 +216,9 @@ function checkRules(ad: { placement: string; mid_roll_at_seconds?: number | null
   }
   if (ad.starts_at && ad.ends_at && ad.ends_at <= ad.starts_at) {
     throw new ApiError(400, "The end date must be after the start date");
+  }
+  if (ad.show_in_rooms && (ad.target_page_ids?.length ?? 0) > 0) {
+    throw new ApiError(400, "Room videos aren't part of any page, so an ad aimed at specific pages can't also run in rooms");
   }
 }
 
